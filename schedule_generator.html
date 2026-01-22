@@ -86,6 +86,7 @@
             background-color: #4285f4;
             color: white;
             font-weight: bold;
+            print-color-adjust: exact; 
         }
         .off-day {
             background-color: white;
@@ -116,6 +117,8 @@
     </style>
 </head>
 <body>
+    
+    <!-- 
     <div class="header">
         <h1>2026 Work Schedule Calendar</h1>
         <p>Your schedule: Odd weeks: Work 2, Off 2, Work 3 | Even weeks: Off 2, Work 2, Off 3</p>
@@ -126,8 +129,8 @@
         
         <button class="download-btn" onclick="downloadCSV()">📥 Download CSV for Google Sheets</button>
         <button class="download-btn" onclick="generateCalendar()">🔄 Refresh Calendar</button>
-    </div>
-
+    </div> 
+    
     <div class="legend">
         <strong>Legend:</strong>
         <div class="legend-item">
@@ -137,7 +140,8 @@
             <span class="legend-color off-day"></span> Off Day
         </div>
     </div>
-
+    -->
+    
     <div id="calendarContainer" class="calendar-grid"></div>
 
     <script>
