@@ -1,0 +1,13 @@
+{
+  "name": "schedule-generator",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Work schedule calendar with persisted day swaps",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}
