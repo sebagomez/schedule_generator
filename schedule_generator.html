@@ -3,24 +3,24 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>2026 Calendar with Work Schedule</title>
+    <title>Work Schedule Calendar</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    
-    <!-- 
+
     <div class="header">
-        <h1>2026 Work Schedule Calendar</h1>
+        <h1>Work Schedule Calendar</h1>
         <p>Your schedule: Odd weeks: Work 2, Off 2, Work 3 | Even weeks: Off 2, Work 2, Off 3</p>
     </div>
 
     <div class="controls">
-        <p><strong>Note:</strong> This calendar uses ISO week numbering (weeks start on Monday). Week 1 of 2026 starts on December 29, 2025.</p>
+        <label for="yearSelect">Year</label>
+        <select id="yearSelect" class="year-select"></select>
 
-        <button class="download-btn" onclick="downloadCSV()">📥 Download CSV for Google Sheets</button>
-        <button class="download-btn" onclick="generateCalendar()">🔄 Refresh Calendar</button>
         <button id="swapModeBtn" class="download-btn swap-btn" onclick="toggleSwapMode()">🔀 Swap Days</button>
-        <p class="swap-hint">To swap days: click "Swap Days", then click one work day and one off day. Right-click any day for more options (mark as work/off, undo). Click a marked day (🔀/✏️) to quickly undo it.</p>
+        <button id="logoutBtn" type="button" class="download-btn logout-btn">🔒 Log out</button>
+
+        <p class="swap-hint">To swap days: tap "Swap Days", then pick one work day and one off day.<span id="pointerHint"> Right-click any day for more options (mark as work/off, undo). Click a marked day (🔀/✏️) to quickly undo it.</span><span id="touchHint" hidden> Tap any day for options (mark as work/off, undo).</span><span id="fullscreenHint" hidden> Click ⛶ on any month to open it fullscreen for a screenshot.</span></p>
     </div>
 
     <div class="legend">
@@ -38,9 +38,19 @@
             <span class="legend-color off-day manual-edit"></span> Manually Edited Day
         </div>
     </div>
-    -->
-    
+
     <div id="calendarContainer" class="calendar-grid"></div>
+
+    <div id="fullscreenOverlay" class="fullscreen-overlay" hidden>
+        <div class="fullscreen-panel">
+            <div class="fullscreen-toolbar">
+                <button id="fullscreenPrev" type="button" title="Previous month (←)">‹ Prev</button>
+                <button id="fullscreenNext" type="button" title="Next month (→)">Next ›</button>
+                <button id="fullscreenClose" type="button" class="fullscreen-close" title="Close (Esc)">✕ Close</button>
+            </div>
+            <div id="fullscreenMonth" class="fullscreen-month"></div>
+        </div>
+    </div>
 
     <script src="script.js"></script>
 </body>

@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sign in - Work Schedule</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body class="login-body">
+    <form id="loginForm" class="login-card" autocomplete="on">
+        <h1>Work Schedule</h1>
+        <p class="login-hint">Enter the password to view the schedule.</p>
+
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
+
+        <button type="submit" class="download-btn">Sign in</button>
+        <p id="loginError" class="login-error" hidden></p>
+    </form>
+
+    <script>
+        const form = document.getElementById('loginForm');
+        const errorEl = document.getElementById('loginError');
+        const passwordEl = document.getElementById('password');
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            errorEl.hidden = true;
+
+            try {
+                const res = await fetch('/api/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ password: passwordEl.value })
+                });
+
+                if (res.ok) {
+                    window.location.replace('/');
+                    return;
+                }
+
+                errorEl.textContent = res.status === 401
+                    ? 'Incorrect password. Try again.'
+                    : `Could not sign in (error ${res.status}).`;
+            } catch (err) {
+                errorEl.textContent = 'Could not reach the server.';
+            }
+
+            errorEl.hidden = false;
+            passwordEl.value = '';
+            passwordEl.focus();
+        });
+    </script>
+</body>
+</html>

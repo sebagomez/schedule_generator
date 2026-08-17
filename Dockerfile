@@ -5,7 +5,7 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm install --omit=dev
 
-COPY schedule_generator.html style.css script.js server.js ./
+COPY schedule_generator.html login.html style.css script.js server.js ./
 
 ENV PORT=3000
 ENV DATA_DIR=/app/data

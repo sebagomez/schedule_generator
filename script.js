@@ -2,10 +2,38 @@ const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
                    'July', 'August', 'September', 'October', 'November', 'December'];
 const dayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
+// Years offered in the year picker. Extend END_YEAR to go further out.
+const START_YEAR = 2026;
+const END_YEAR = 2031;
+const DEFAULT_YEAR = 2026;
+
+// Feature flag: the per-month fullscreen view (⛶ button, overlay, prev/next).
+// Off because the normal grid already reads well on a phone. Flip to true to
+// bring back the ⛶ buttons, the overlay and its keyboard shortcuts.
+const ENABLE_FULLSCREEN_MONTH = false;
+
+// Touch devices have no right-click and no hover, and long-press is owned by the
+// browser/OS (text-selection callout), so trying to intercept it is unreliable.
+// On these devices a plain tap opens the day menu instead. Desktop keeps
+// right-click, where a tap-to-open menu would fight normal clicking.
+const isTouchDevice = typeof window !== 'undefined' && window.matchMedia
+    ? window.matchMedia('(hover: none) and (pointer: coarse)').matches
+    : false;
+
+// Monday that starts an ODD week of the pattern. Week parity is derived by
+// counting whole weeks from here, so the 2-2-3 cycle stays continuous across
+// year boundaries. (A per-year, Jan-1-anchored week number silently flipped
+// the parity between 2028 and 2029 and broke the cycle.)
+const PATTERN_ANCHOR = new Date(2025, 11, 29);
+
+let currentYear = DEFAULT_YEAR;
+
 // Date (YYYY-MM-DD) -> 'work' | 'off' overrides created by day swaps, loaded from the server.
 let swapOverrides = {};
 let swapMode = false;
 let selectedForSwap = [];
+// Month index currently shown in the fullscreen view, or null when closed.
+let fullscreenMonth = null;
 
 function formatDateKey(date) {
     const y = date.getFullYear();
@@ -22,43 +50,34 @@ function parseDateKey(dateKey) {
     return new Date(y, m - 1, d);
 }
 
-function getBaseWorkSchedule(date) {
-    // For work schedule purposes, Sunday belongs to the previous Monday-started week
-    // So we need to adjust the date when calculating week number for Sundays
-    let adjustedDate = new Date(date);
-    if (date.getDay() === 0) {
-        // If it's Sunday, subtract 1 day to get Saturday, which is in the correct week
-        adjustedDate.setDate(adjustedDate.getDate() - 1);
-    }
-
-    // Get the week number using the adjusted date
-    const yearStart = new Date(adjustedDate.getFullYear(), 0, 1);
-    const dayOfYear = Math.floor((adjustedDate - yearStart) / (1000 * 60 * 60 * 24));
-    const weekNumber = Math.ceil((dayOfYear + yearStart.getDay() + 1) / 7);
-
-    // Get day of week (0 = Sunday, 1 = Monday, etc.)
+// Monday = 0 ... Sunday = 6
+function mondayBasedDay(date) {
     const dayOfWeek = date.getDay();
+    return dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+}
 
-    // Convert to Monday = 0, Sunday = 6
-    const mondayBasedDay = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+function getBaseWorkSchedule(date) {
+    const dayIndex = mondayBasedDay(date);
 
-    const isOddWeek = weekNumber % 2 === 1;
+    // Monday that starts this date's week. Using the Monday (rather than the
+    // date itself) is what makes Sunday belong to the week it started in.
+    const weekStart = new Date(date);
+    weekStart.setDate(weekStart.getDate() - dayIndex);
 
-    // Pattern is always: 2, 2, 3 (2 days, then 2 days, then 3 days)
-    // Odd weeks start with WORK, Even weeks start with OFF
+    const weeksFromAnchor = Math.floor(Math.round((weekStart - PATTERN_ANCHOR) / 86400000) / 7);
+    // Anchor week is odd, so an even offset means an odd week.
+    const isOddWeek = ((weeksFromAnchor % 2) + 2) % 2 === 0;
 
+    // Pattern is always 2, 2, 3. Odd weeks start with WORK, even weeks with OFF.
     if (isOddWeek) {
         // Odd weeks: WORK 2 (Mon-Tue), OFF 2 (Wed-Thu), WORK 3 (Fri-Sun)
-        if (mondayBasedDay >= 0 && mondayBasedDay <= 1) return 'work';  // Mon-Tue
-        if (mondayBasedDay >= 2 && mondayBasedDay <= 3) return 'off';   // Wed-Thu
-        if (mondayBasedDay >= 4 && mondayBasedDay <= 6) return 'work';  // Fri-Sun
-    } else {
-        // Even weeks: OFF 2 (Mon-Tue), WORK 2 (Wed-Thu), OFF 3 (Fri-Sun)
-        if (mondayBasedDay >= 0 && mondayBasedDay <= 1) return 'off';   // Mon-Tue
-        if (mondayBasedDay >= 2 && mondayBasedDay <= 3) return 'work';  // Wed-Thu
-        if (mondayBasedDay >= 4 && mondayBasedDay <= 6) return 'off';   // Fri-Sun
+        if (dayIndex <= 1) return 'work';
+        if (dayIndex <= 3) return 'off';
+        return 'work';
     }
-
+    // Even weeks: OFF 2 (Mon-Tue), WORK 2 (Wed-Thu), OFF 3 (Fri-Sun)
+    if (dayIndex <= 1) return 'off';
+    if (dayIndex <= 3) return 'work';
     return 'off';
 }
 
@@ -79,18 +98,28 @@ async function loadSwapOverrides() {
     }
 }
 
-function toggleSwapMode() {
-    swapMode = !swapMode;
+function clearSwapSelection() {
     selectedForSwap.forEach(td => td.classList.remove('selected-for-swap'));
     selectedForSwap = [];
+}
+
+function toggleSwapMode() {
+    swapMode = !swapMode;
+    clearSwapSelection();
 
     const btn = document.getElementById('swapModeBtn');
     btn.textContent = swapMode ? '✅ Select 2 days to swap' : '🔀 Swap Days';
     btn.classList.toggle('active', swapMode);
 }
 
-async function onDayClick(date, td) {
+async function onDayClick(date, td, event) {
     if (!swapMode) {
+        // Touch: tap is the only gesture available, so it opens the menu
+        // (which itself offers Undo). Desktop keeps the quick-undo shortcut.
+        if (isTouchDevice) {
+            showDayMenu(event, date);
+            return;
+        }
         if (swapOverrides[formatDateKey(date)]) {
             if (confirm(`Undo the change on ${date.toDateString()}?`)) {
                 await revertOverride(date);
@@ -120,8 +149,7 @@ async function performSwap() {
 
     if (statusA === statusB) {
         alert('Pick one work day and one off day to swap.');
-        selectedForSwap.forEach(td => td.classList.remove('selected-for-swap'));
-        selectedForSwap = [];
+        clearSwapSelection();
         return;
     }
 
@@ -145,7 +173,7 @@ async function performSwap() {
 
     selectedForSwap = [];
     toggleSwapMode();
-    generateCalendar();
+    render();
 }
 
 async function revertOverride(date) {
@@ -159,7 +187,7 @@ async function revertOverride(date) {
         console.error(err);
         return;
     }
-    generateCalendar();
+    render();
 }
 
 async function setManualOverride(date, status) {
@@ -176,12 +204,17 @@ async function setManualOverride(date, status) {
         console.error(err);
         return;
     }
-    generateCalendar();
+    render();
 }
 
 let openContextMenu = null;
+let openBackdrop = null;
 
 function closeContextMenu() {
+    if (openBackdrop) {
+        openBackdrop.remove();
+        openBackdrop = null;
+    }
     if (openContextMenu) {
         openContextMenu.remove();
         openContextMenu = null;
@@ -189,8 +222,21 @@ function closeContextMenu() {
     }
 }
 
-function showContextMenu(event, date, td) {
-    event.preventDefault();
+// Keeps a cursor-anchored menu inside the viewport instead of overflowing
+// off the right/bottom edge on small screens.
+function clampToViewport(menu, x, y) {
+    const margin = 8;
+    const rect = menu.getBoundingClientRect();
+    const left = Math.max(margin, Math.min(x, window.innerWidth - rect.width - margin));
+    const top = Math.max(margin, Math.min(y, window.innerHeight - rect.height - margin));
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+}
+
+// Day action menu. Opened by right-click on desktop, by tap on touch devices,
+// where it renders as a bottom sheet with large tap targets.
+function showDayMenu(event, date) {
+    if (event) event.preventDefault();
     closeContextMenu();
 
     const dateKey = formatDateKey(date);
@@ -199,11 +245,15 @@ function showContextMenu(event, date, td) {
     const hasOverride = Boolean(swapOverrides[dateKey]);
 
     const menu = document.createElement('div');
-    menu.className = 'context-menu';
-    menu.style.left = `${event.clientX}px`;
-    menu.style.top = `${event.clientY}px`;
+    menu.className = isTouchDevice ? 'context-menu context-menu--sheet' : 'context-menu';
+
+    const title = document.createElement('div');
+    title.className = 'context-menu__title';
+    title.textContent = `${date.toDateString()} — ${currentStatus === 'work' ? 'Work' : 'Off'}`;
+    menu.appendChild(title);
 
     const toggleBtn = document.createElement('button');
+    toggleBtn.type = 'button';
     toggleBtn.textContent = `Mark as ${oppositeStatus === 'work' ? 'Work' : 'Off'}`;
     toggleBtn.onclick = () => {
         closeContextMenu();
@@ -213,6 +263,7 @@ function showContextMenu(event, date, td) {
 
     if (hasOverride) {
         const undoBtn = document.createElement('button');
+        undoBtn.type = 'button';
         undoBtn.textContent = '↩ Undo change';
         undoBtn.onclick = () => {
             closeContextMenu();
@@ -221,10 +272,119 @@ function showContextMenu(event, date, td) {
         menu.appendChild(undoBtn);
     }
 
+    if (isTouchDevice) {
+        const cancelBtn = document.createElement('button');
+        cancelBtn.type = 'button';
+        cancelBtn.className = 'context-menu__cancel';
+        cancelBtn.textContent = 'Cancel';
+        cancelBtn.onclick = closeContextMenu;
+        menu.appendChild(cancelBtn);
+
+        const backdrop = document.createElement('div');
+        backdrop.className = 'context-menu-backdrop';
+        backdrop.addEventListener('click', closeContextMenu);
+        document.body.appendChild(backdrop);
+        openBackdrop = backdrop;
+    }
+
     document.body.appendChild(menu);
     openContextMenu = menu;
-    // Deferred so the click that opened the menu doesn't immediately close it.
-    setTimeout(() => document.addEventListener('click', closeContextMenu), 0);
+
+    if (!isTouchDevice) {
+        clampToViewport(menu, event.clientX, event.clientY);
+        // Deferred so the click that opened the menu doesn't immediately close it.
+        setTimeout(() => document.addEventListener('click', closeContextMenu), 0);
+    }
+}
+
+function createDayCell(date) {
+    const td = document.createElement('td');
+    td.textContent = date.getDate();
+    td.dataset.date = formatDateKey(date);
+
+    const schedule = getWorkSchedule(date);
+    td.className = schedule === 'work' ? 'work-day' : 'off-day';
+
+    const override = swapOverrides[td.dataset.date];
+    if (override) {
+        if (override.pairedWith) {
+            td.classList.add('swapped');
+            td.title = 'Swapped day - click to undo, right-click for options';
+        } else {
+            td.classList.add('manual-edit');
+            td.title = 'Manually edited day - click to undo, right-click for options';
+        }
+    }
+
+    td.addEventListener('click', (e) => onDayClick(date, td, e));
+    // Also suppresses the browser's own long-press menu on touch devices.
+    td.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        if (!isTouchDevice) showDayMenu(e, date);
+    });
+    return td;
+}
+
+// Builds one month block. `expandable` adds the click-to-fullscreen affordance.
+function buildMonth(year, month, { expandable = true } = {}) {
+    const monthDiv = document.createElement('div');
+    monthDiv.className = 'month';
+
+    const monthTitle = document.createElement('div');
+    monthTitle.className = 'month-name';
+    monthTitle.textContent = `${monthNames[month]} ${year}`;
+
+    if (expandable && ENABLE_FULLSCREEN_MONTH) {
+        monthDiv.classList.add('expandable');
+        const expandBtn = document.createElement('button');
+        expandBtn.className = 'expand-btn';
+        expandBtn.type = 'button';
+        expandBtn.textContent = '⛶';
+        expandBtn.title = `View ${monthNames[month]} ${year} fullscreen`;
+        expandBtn.setAttribute('aria-label', `View ${monthNames[month]} ${year} fullscreen`);
+        expandBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            openFullscreen(month);
+        });
+        monthTitle.appendChild(expandBtn);
+    }
+
+    monthDiv.appendChild(monthTitle);
+
+    const table = document.createElement('table');
+    table.className = 'calendar-table';
+
+    const headerRow = document.createElement('tr');
+    dayNames.forEach(day => {
+        const th = document.createElement('th');
+        th.textContent = day;
+        headerRow.appendChild(th);
+    });
+    table.appendChild(headerRow);
+
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    const startingDayOfWeek = mondayBasedDay(new Date(year, month, 1));
+
+    let weekRow = document.createElement('tr');
+    for (let i = 0; i < startingDayOfWeek; i++) {
+        const td = document.createElement('td');
+        td.className = 'empty-day';
+        weekRow.appendChild(td);
+    }
+
+    let currentDayOfWeek = startingDayOfWeek;
+    for (let day = 1; day <= daysInMonth; day++) {
+        weekRow.appendChild(createDayCell(new Date(year, month, day)));
+        currentDayOfWeek++;
+
+        if (currentDayOfWeek % 7 === 0 || day === daysInMonth) {
+            table.appendChild(weekRow);
+            weekRow = document.createElement('tr');
+        }
+    }
+
+    monthDiv.appendChild(table);
+    return monthDiv;
 }
 
 function generateCalendar() {
@@ -232,117 +392,124 @@ function generateCalendar() {
     container.innerHTML = '';
 
     for (let month = 0; month < 12; month++) {
-        const monthDiv = document.createElement('div');
-        monthDiv.className = 'month';
-
-        const monthTitle = document.createElement('div');
-        monthTitle.className = 'month-name';
-        monthTitle.textContent = monthNames[month] + ' 2026';
-        monthDiv.appendChild(monthTitle);
-
-        const table = document.createElement('table');
-        table.className = 'calendar-table';
-
-        // Header row
-        const headerRow = document.createElement('tr');
-        dayNames.forEach(day => {
-            const th = document.createElement('th');
-            th.textContent = day;
-            headerRow.appendChild(th);
-        });
-        table.appendChild(headerRow);
-
-        // Get first day of month and days in month
-        const firstDay = new Date(2026, month, 1);
-        const lastDay = new Date(2026, month + 1, 0);
-        const daysInMonth = lastDay.getDate();
-
-        // Convert Sunday (0) to 6, and shift Monday to 0
-        let startingDayOfWeek = firstDay.getDay();
-        startingDayOfWeek = startingDayOfWeek === 0 ? 6 : startingDayOfWeek - 1;
-
-        let dayCounter = 1;
-        let weekRow = document.createElement('tr');
-
-        // Empty cells before first day
-        for (let i = 0; i < startingDayOfWeek; i++) {
-            const td = document.createElement('td');
-            td.className = 'empty-day';
-            weekRow.appendChild(td);
-        }
-
-        // Fill in the days
-        let currentDayOfWeek = startingDayOfWeek;
-        for (let day = 1; day <= daysInMonth; day++) {
-            const currentDate = new Date(2026, month, day);
-            const td = document.createElement('td');
-            td.textContent = day;
-            td.dataset.date = formatDateKey(currentDate);
-
-            const dateKey = formatDateKey(currentDate);
-            const schedule = getWorkSchedule(currentDate);
-            td.className = schedule === 'work' ? 'work-day' : 'off-day';
-            const override = swapOverrides[dateKey];
-            if (override) {
-                if (override.pairedWith) {
-                    td.classList.add('swapped');
-                    td.title = 'Swapped day - click to undo, right-click for options';
-                } else {
-                    td.classList.add('manual-edit');
-                    td.title = 'Manually edited day - click to undo, right-click for options';
-                }
-            }
-            td.addEventListener('click', () => onDayClick(currentDate, td));
-            td.addEventListener('contextmenu', (e) => showContextMenu(e, currentDate, td));
-
-            weekRow.appendChild(td);
-            currentDayOfWeek++;
-
-            if (currentDayOfWeek % 7 === 0 || day === daysInMonth) {
-                table.appendChild(weekRow);
-                weekRow = document.createElement('tr');
-            }
-        }
-
-        monthDiv.appendChild(table);
-        container.appendChild(monthDiv);
+        container.appendChild(buildMonth(currentYear, month));
     }
 }
 
-function downloadCSV() {
-    const dayNamesForCSV = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-    let csv = 'Month,Date,Day of Week,Week Number,Week Type,Status,Swapped\n';
-
-    for (let month = 0; month < 12; month++) {
-        const daysInMonth = new Date(2026, month + 1, 0).getDate();
-
-        for (let day = 1; day <= daysInMonth; day++) {
-            const currentDate = new Date(2026, month, day);
-            const schedule = getWorkSchedule(currentDate);
-            const dayOfWeek = dayNamesForCSV[currentDate.getDay()];
-            const dateStr = `${month + 1}/${day}/2026`;
-            const isSwapped = Boolean(swapOverrides[formatDateKey(currentDate)]);
-
-            // Calculate week number
-            const yearStart = new Date(currentDate.getFullYear(), 0, 1);
-            const dayOfYear = Math.floor((currentDate - yearStart) / (1000 * 60 * 60 * 24));
-            const weekNumber = Math.ceil((dayOfYear + yearStart.getDay() + 1) / 7);
-            const weekType = weekNumber % 2 === 1 ? 'Odd' : 'Even';
-
-            csv += `${monthNames[month]},${dateStr},${dayOfWeek},${weekNumber},${weekType},${schedule === 'work' ? 'WORK' : 'OFF'},${isSwapped ? 'Yes' : 'No'}\n`;
-        }
+function renderFullscreen() {
+    if (!ENABLE_FULLSCREEN_MONTH) return;
+    const overlay = document.getElementById('fullscreenOverlay');
+    const body = document.getElementById('fullscreenMonth');
+    if (!overlay || !body) return;
+    if (fullscreenMonth === null) {
+        overlay.hidden = true;
+        document.body.classList.remove('fullscreen-open');
+        return;
     }
 
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = '2026_work_schedule.csv';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    window.URL.revokeObjectURL(url);
+    body.innerHTML = '';
+    body.appendChild(buildMonth(currentYear, fullscreenMonth, { expandable: false }));
+    overlay.hidden = false;
+    document.body.classList.add('fullscreen-open');
 }
 
-// Load any saved swaps, then generate the calendar on load
-loadSwapOverrides().then(generateCalendar);
+function openFullscreen(month) {
+    if (!ENABLE_FULLSCREEN_MONTH) return;
+    clearSwapSelection();
+    fullscreenMonth = month;
+    renderFullscreen();
+}
+
+function closeFullscreen() {
+    if (fullscreenMonth === null) return;
+    clearSwapSelection();
+    fullscreenMonth = null;
+    renderFullscreen();
+}
+
+function stepFullscreen(delta) {
+    if (fullscreenMonth === null) return;
+    const next = fullscreenMonth + delta;
+    if (next < 0 || next > 11) return;
+    openFullscreen(next);
+}
+
+// Single entry point so the grid and the fullscreen view never drift apart.
+function render() {
+    generateCalendar();
+    renderFullscreen();
+}
+
+function populateYearSelect() {
+    const select = document.getElementById('yearSelect');
+    for (let year = START_YEAR; year <= END_YEAR; year++) {
+        const option = document.createElement('option');
+        option.value = String(year);
+        option.textContent = String(year);
+        option.selected = year === DEFAULT_YEAR;
+        select.appendChild(option);
+    }
+    select.addEventListener('change', () => {
+        currentYear = Number(select.value);
+        // Overrides are keyed by full date, so they stay put across years;
+        // only the visible year changes.
+        closeFullscreen();
+        render();
+    });
+}
+
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeContextMenu();
+    if (!ENABLE_FULLSCREEN_MONTH || fullscreenMonth === null) return;
+    if (e.key === 'Escape') closeFullscreen();
+    if (e.key === 'ArrowLeft') stepFullscreen(-1);
+    if (e.key === 'ArrowRight') stepFullscreen(1);
+});
+
+async function logout() {
+    try {
+        await fetch('/api/logout', { method: 'POST' });
+    } catch (err) {
+        console.error(err);
+    }
+    window.location.replace('/login');
+}
+
+function setupFullscreen() {
+    const overlay = document.getElementById('fullscreenOverlay');
+    const hint = document.getElementById('fullscreenHint');
+
+    if (!ENABLE_FULLSCREEN_MONTH) {
+        // Drop the markup entirely so a disabled feature can't be reached.
+        if (overlay) overlay.remove();
+        if (hint) hint.remove();
+        return;
+    }
+
+    if (hint) hint.hidden = false;
+    document.getElementById('fullscreenClose').addEventListener('click', closeFullscreen);
+    document.getElementById('fullscreenPrev').addEventListener('click', () => stepFullscreen(-1));
+    document.getElementById('fullscreenNext').addEventListener('click', () => stepFullscreen(1));
+    overlay.addEventListener('click', (e) => {
+        if (e.target.id === 'fullscreenOverlay') closeFullscreen();
+    });
+}
+
+function showDeviceHint() {
+    const pointerHint = document.getElementById('pointerHint');
+    const touchHint = document.getElementById('touchHint');
+    if (pointerHint) pointerHint.hidden = isTouchDevice;
+    if (touchHint) touchHint.hidden = !isTouchDevice;
+}
+
+function init() {
+    populateYearSelect();
+    showDeviceHint();
+    document.getElementById('logoutBtn').addEventListener('click', logout);
+    setupFullscreen();
+
+    // Load any saved swaps, then draw the calendar.
+    loadSwapOverrides().then(render);
+}
+
+init();

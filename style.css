@@ -9,6 +9,62 @@ body {
     text-align: center;
     margin-bottom: 30px;
 }
+
+/* ---- Login page ---- */
+.login-body {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 80vh;
+}
+.login-card {
+    background: white;
+    padding: 32px;
+    border-radius: 8px;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
+    width: 100%;
+    max-width: 360px;
+    text-align: center;
+}
+.login-card h1 {
+    margin: 0 0 8px;
+    font-size: 22px;
+}
+.login-hint {
+    margin: 0 0 20px;
+    font-size: 14px;
+    color: #666;
+}
+.login-card label {
+    display: block;
+    text-align: left;
+    font-weight: bold;
+    margin-bottom: 6px;
+    font-size: 14px;
+}
+.login-card input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 10px;
+    font-size: 16px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+}
+.login-card .download-btn {
+    width: 100%;
+}
+.login-error {
+    margin: 14px 0 0;
+    color: #c5301f;
+    font-size: 14px;
+}
+.logout-btn {
+    background-color: #6c757d;
+    margin-left: 10px;
+}
+.logout-btn:hover {
+    background-color: #565e64;
+}
 .controls {
     background: white;
     padding: 20px;
@@ -21,10 +77,20 @@ body {
     margin: 10px 0 5px 0;
     font-weight: bold;
 }
-.controls input {
+.controls input,
+.controls select {
     padding: 8px;
     border: 1px solid #ddd;
     border-radius: 4px;
+}
+.year-select {
+    font-size: 16px;
+    min-width: 120px;
+    background: white;
+    cursor: pointer;
+}
+.controls .download-btn {
+    display: block;
 }
 .download-btn {
     background-color: #4285f4;
@@ -52,6 +118,12 @@ body {
 }
 .calendar-table td {
     cursor: pointer;
+    /* Stops the browser's long-press callout / text-selection menu from
+       hijacking taps on a day cell. */
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-tap-highlight-color: rgba(66, 133, 244, 0.25);
 }
 .calendar-table td.empty-day {
     cursor: default;
@@ -100,6 +172,55 @@ body {
 .context-menu button:hover {
     background-color: #f0f0f0;
 }
+.context-menu__title {
+    padding: 8px 16px;
+    font-size: 12px;
+    font-weight: bold;
+    color: #666;
+    border-bottom: 1px solid #eee;
+    margin-bottom: 4px;
+    white-space: nowrap;
+}
+
+/* Touch devices: render the day menu as a bottom sheet with big tap targets. */
+.context-menu-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.35);
+    z-index: 1500;
+}
+.context-menu--sheet {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    top: auto;
+    min-width: 0;
+    border: none;
+    border-radius: 14px 14px 0 0;
+    padding: 8px 0 max(8px, env(safe-area-inset-bottom));
+    z-index: 1600;
+}
+.context-menu--sheet .context-menu__title {
+    text-align: center;
+    font-size: 14px;
+    padding: 12px 16px;
+    white-space: normal;
+}
+.context-menu--sheet button {
+    text-align: center;
+    font-size: 17px;
+    padding: 16px;
+    min-height: 44px;
+}
+.context-menu--sheet button:active {
+    background-color: #e8e8e8;
+}
+.context-menu--sheet .context-menu__cancel {
+    color: #666;
+    border-top: 1px solid #eee;
+    margin-top: 4px;
+}
 .calendar-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
@@ -113,11 +234,120 @@ body {
     box-shadow: 0 2px 4px rgba(0,0,0,0.1);
 }
 .month-name {
+    position: relative;
     text-align: center;
     font-size: 18px;
     font-weight: bold;
     margin-bottom: 10px;
     color: #333;
+}
+.expand-btn {
+    position: absolute;
+    top: 50%;
+    right: 0;
+    transform: translateY(-50%);
+    border: 1px solid #ddd;
+    background: white;
+    border-radius: 4px;
+    font-size: 14px;
+    line-height: 1;
+    padding: 4px 7px;
+    cursor: pointer;
+    color: #555;
+}
+.expand-btn:hover {
+    background: #4285f4;
+    border-color: #4285f4;
+    color: white;
+}
+
+/* ---- Fullscreen single-month view (for screenshots) ---- */
+body.fullscreen-open {
+    overflow: hidden;
+}
+.fullscreen-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    z-index: 2000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+}
+.fullscreen-overlay[hidden] {
+    display: none;
+}
+.fullscreen-panel {
+    background: #f5f5f5;
+    border-radius: 10px;
+    padding: 16px;
+    width: min(900px, 100%);
+    max-height: 100%;
+    overflow: auto;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.35);
+}
+.fullscreen-toolbar {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    margin-bottom: 12px;
+}
+.fullscreen-toolbar button {
+    padding: 8px 14px;
+    font-size: 14px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    background: white;
+    cursor: pointer;
+}
+.fullscreen-toolbar button:hover {
+    background: #eee;
+}
+.fullscreen-toolbar .fullscreen-close {
+    margin-left: auto;
+}
+.fullscreen-month .month-name {
+    font-size: 30px;
+    margin-bottom: 16px;
+}
+.fullscreen-month .calendar-table th {
+    font-size: 18px;
+    padding: 12px 6px;
+}
+.fullscreen-month .calendar-table td {
+    font-size: 24px;
+    padding: 20px 6px;
+}
+.fullscreen-month .swapped::after,
+.fullscreen-month .manual-edit::after {
+    font-size: 14px;
+    top: 2px;
+    right: 5px;
+}
+
+@media print {
+    /* Always noise on paper. */
+    .controls, .legend, .fullscreen-toolbar {
+        display: none !important;
+    }
+    /* Only suppress the full-year grid when a single month is expanded;
+       otherwise (fullscreen disabled or closed) the grid IS what we print. */
+    body.fullscreen-open .header,
+    body.fullscreen-open .calendar-grid {
+        display: none !important;
+    }
+    .fullscreen-overlay {
+        position: static;
+        background: none;
+        padding: 0;
+    }
+    .fullscreen-panel {
+        box-shadow: none;
+        width: 100%;
+        max-height: none;
+        overflow: visible;
+    }
 }
 .calendar-table {
     width: 100%;
