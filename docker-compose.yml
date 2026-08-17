@@ -5,4 +5,18 @@ services:
       - "8080:3000"
     volumes:
       - ./data:/app/data
+    # Optional: create .env from .env.example to override any of these.
+    # With no Azure credentials set, the app uses local files in ./data.
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATA_DIR: /app/data
+      # Local/LAN over plain HTTP - must stay false or the cookie is dropped.
+      COOKIE_SECURE: "false"
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3000/api/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      interval: 30s
+      timeout: 3s
+      retries: 3

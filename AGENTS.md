@@ -24,7 +24,10 @@ Single-user personal tool: no database, no user accounts, no build step, no test
   - ⚠️ In this environment `npm install` is blocked ("npm is no longer supported in a global context"). Use **`pnpm install`** — that's why `pnpm-lock.yaml` exists alongside `package-lock.json`.
 - **First start** creates `data/settings.json` with the default password `changeme` and logs a warning. Edit `password` there and restart before exposing the app.
 - **Opening `schedule_generator.html` directly as a file no longer works properly** — the page is served behind the auth gate, and there's no CSV fallback anymore. Run the server.
-- **Docker**: `docker compose up --build`. Compose bind-mounts `./data:/app/data`, so `data/*.json` appears in the project folder on the host and survives rebuilds. Don't run without something mounted at `/app/data` if persistence matters. `PORT`, `DATA_DIR` and `COOKIE_SECURE` are env-configurable.
+- **Docker**: `docker compose up --build`. Compose bind-mounts `./data:/app/data`, so `data/*.json` appears in the project folder on the host and survives rebuilds. Don't run without something mounted at `/app/data` if persistence matters.
+- **Configuration**: every setting is documented in [.env.example](.env.example) (copy to `.env`, which is gitignored). `SCHEDULE_PASSWORD` and `SESSION_SECRET` override the corresponding `settings.json` fields; supplying both means the file is never created. `COOKIE_SECURE` must be `false` for plain-HTTP local/LAN use and `true` over HTTPS — getting it wrong causes a silent login loop, because the browser drops the cookie.
+- **Azure**: infrastructure is Terraform under [terraform/](terraform/) ([terraform/README.md](terraform/README.md)); the deployment narrative is in [DEPLOY-AZURE.md](DEPLOY-AZURE.md). Target is Container Apps + Blob Storage, with the image built by `az acr build` (no local Docker needed). **Unvalidated** — `terraform`, `az` and `docker` are all absent from this dev environment, so it has never been planned or applied. There is deliberately no shell deploy script; Terraform replaced it.
+- **Dependencies**: `express` and `@azure/storage-blob`. There is deliberately **no npm lockfile** — npm is blocked in this dev environment so `pnpm-lock.yaml` is authoritative, and the Dockerfile copies only `package.json` and runs `npm install`. Don't re-add a stale `package-lock.json`.
 
 ## Architecture
 
@@ -70,12 +73,50 @@ states (`.selected-for-swap`, `.swapped`, `.manual-edit`), the right-click
 the fullscreen flag is off, retained so flipping it back needs no CSS work), and
 a `@media print` block.
 
+### [storage.js](storage.js)
+
+Persistence layer for the two JSON documents (`swaps.json`, `settings.json`),
+with two interchangeable backends selected by `STORAGE_BACKEND`, or inferred
+(Azure credentials present ⇒ `azure-blob`, else `local`):
+
+- **`local`** — flat files under `DATA_DIR`. Default, used by compose.
+- **`azure-blob`** — block blobs in the container named by `AZURE_STORAGE_CONTAINER` (default `schedule-data`), created on startup if missing. Auth via `AZURE_STORAGE_CONNECTION_STRING`, or `AZURE_STORAGE_ACCOUNT_NAME` + `AZURE_STORAGE_ACCOUNT_KEY`. The SDK is `require`d lazily so local mode never loads it.
+
+Both documents are **cached in memory** by `init()` and written through on save,
+which is what lets the rest of the app keep reading them synchronously.
+Consequences an agent must respect:
+
+- **Run at most ONE replica** when using `azure-blob`. Two instances would each cache their own copy and clobber each other. `terraform/main.tf` hard-codes `max_replicas = 1` as a literal (not a variable), defines no scale rules, and uses `revision_mode = "Single"`. Don't turn `max_replicas` into a variable or add scale rules.
+- **Optimistic concurrency backs that invariant up.** Blob writes send `If-Match` with the ETag last read (or `If-None-Match: *` when creating). On a precondition failure `storage.js` re-reads the blob, refreshes the cache, and throws an error carrying `conflict = true`, which `server.js` turns into a **409**. This exists because a Container Apps revision rollout can briefly run two containers; without it, the outgoing instance could silently overwrite newer data. Preserve this if you touch `blobWrite`.
+- **`write()` persists before updating the cache**, and `server.js`'s `readSwaps()` returns a shallow copy, so a failed save can't leave the cache holding changes that were never stored.
+- `getSettings()` re-reads the file in `local` mode (so hand-editing `data/settings.json` takes effect without a restart, as before) but serves the cache in `azure-blob` mode.
+- The blob schema is byte-identical to the local files, so `data/*.json` can be uploaded to seed the container, or downloaded to run locally.
+
 ### [server.js](server.js)
 
-Express app serving the static frontend plus a minimal REST API.
+Express app serving the static frontend plus a minimal REST API. All persistence
+goes through `storage.js` — there are no `fs` calls left in this file. The write
+endpoints are `async` and funnel storage failures into an error-handling
+middleware that returns a 500 rather than hanging the request.
+
+`GET /api/health` is an unauthenticated liveness probe returning
+`{ ok, storage }`; it's used by the Docker `HEALTHCHECK` and by Azure.
+
+**Where the auth secrets live** — `settings.json` only stores what the
+environment doesn't provide:
+
+| Config | `settings.json` |
+|---|---|
+| Neither env var | created with `password` + `sessionSecret` (local default) |
+| `SCHEDULE_PASSWORD` only | created with **only** `sessionSecret` |
+| `SCHEDULE_PASSWORD` + `SESSION_SECRET` | **never created or read** (Azure setup) |
+
+Don't "helpfully" re-add a `password` field when it comes from the environment:
+it would be ignored at runtime and read as live config by anyone inspecting the
+store.
 
 **Auth (UI-level only, deliberately basic):**
-- `data/settings.json` = `{ password, sessionSecret }`. `loadOrCreateSettings()` creates it on first run (default password `changeme`, random 32-byte hex secret) and warns while the default is unchanged.
+- `settings.json` = `{ password, sessionSecret }`, stored via `storage.js`. `loadOrCreateSettings()` creates it on first run (default password `changeme`, random 32-byte hex secret) and warns while the default is unchanged.
 - `POST /api/login` compares with `crypto.timingSafeEqual` and delays failures ~500ms to blunt brute-forcing; on success sets an `HttpOnly`, `SameSite=Lax` cookie (`schedule_auth`, 30 days). Set `COOKIE_SECURE=true` behind HTTPS.
 - The cookie value is `HMAC(sessionSecret, current password)` — so the session survives restarts (secret is persisted) but **changing the password invalidates all existing cookies**.
 - A gate middleware redirects unauthenticated requests to `/login`. `PUBLIC_FILES` must include everything the login page needs — currently `/login`, `/login.html`, `/style.css`, `/favicon.ico`. **`/style.css` has to stay public or the login page renders unstyled.**
@@ -92,9 +133,30 @@ Backed by flat JSON at `DATA_DIR/swaps.json` (`DATA_DIR` defaults to `./data`, `
 
 ### [Dockerfile](Dockerfile) / [docker-compose.yml](docker-compose.yml)
 
-`node:20-alpine` running `server.js`; compose bind-mounts `./data:/app/data`.
-**The Dockerfile `COPY`s frontend files by name** — if you add a new HTML/CSS/JS
-file, add it to that `COPY` line or it will 404 in the image.
+`node:20-alpine` running `server.js` as the non-root `node` user, with a
+`HEALTHCHECK` hitting `/api/health`; compose bind-mounts `./data:/app/data`.
+
+**The Dockerfile `COPY`s files by name** — if you add a new HTML/CSS/JS file, or
+a new server-side module, add it to a `COPY` line or it will 404 / crash at
+require time. The image declares the `AZURE_STORAGE_*` / `SCHEDULE_PASSWORD` /
+`COOKIE_SECURE` variables as empty defaults: credentials are injected at runtime
+and **must never be baked into the image**.
+
+The image build has not been verified — Docker isn't installed in this workspace.
+On Azure the image is built by ACR Tasks from this same Dockerfile, so anything
+missing from a `COPY` line breaks the deployed app too.
+
+### [terraform/](terraform/)
+
+`versions.tf` (providers, pinned `azurerm ~> 3.116`, commented remote backend),
+`variables.tf`, `main.tf`, `outputs.tf`, `terraform.tfvars.example`, `README.md`.
+Key invariants, all explained in `terraform/README.md`:
+
+- `max_replicas = 1` is hard-coded, for the storage-cache reason above. `min_replicas` is a 0-or-1 variable.
+- The image tag defaults to a hash of the app source files listed in `locals.source_files`. **If you add a new runtime file, add it to that list** or code changes won't produce a new image.
+- A `null_resource` + `local-exec` runs `az acr build`; Terraform itself never builds images.
+- Registry admin credentials are used instead of managed identity, to dodge a creation-order race.
+- Secrets (password, session secret, connection string, registry password) end up in Terraform state — `*.tfvars` and `*.tfstate` are gitignored, `.terraform.lock.hcl` is intentionally **not**.
 
 ## Notes for changes
 

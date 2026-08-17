@@ -1,89 +1,98 @@
 const express = require('express');
 const crypto = require('crypto');
-const fs = require('fs');
 const path = require('path');
+const storage = require('./storage');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
-const DATA_FILE = path.join(DATA_DIR, 'swaps.json');
-const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
 const VALID_STATUSES = ['work', 'off'];
 
 const DEFAULT_PASSWORD = 'changeme';
 const COOKIE_NAME = 'schedule_auth';
 const COOKIE_MAX_AGE_DAYS = 30;
-// Set COOKIE_SECURE=true when serving over HTTPS.
+// Set COOKIE_SECURE=true when serving over HTTPS (required on Azure).
 const COOKIE_SECURE = process.env.COOKIE_SECURE === 'true';
+// Optional: supply the secrets via app settings instead of settings.json.
+// Preferred on Azure, where secrets belong in configuration, not in a data blob.
+// Set BOTH and settings.json is never created or read at all.
+const PASSWORD_FROM_ENV = process.env.SCHEDULE_PASSWORD || '';
+const SESSION_SECRET_FROM_ENV = process.env.SESSION_SECRET || '';
 
 // Files that must stay reachable without a session, or the login page can't
 // render. style.css is shared with the app but contains nothing sensitive.
 const PUBLIC_FILES = ['/login', '/login.html', '/style.css', '/favicon.ico'];
 
+// Shallow copy: handlers mutate the result in place, and a failed save must not
+// leave the cached document holding changes that were never persisted. Entries
+// are always replaced wholesale, never mutated, so one level is enough.
 function readSwaps() {
-    try {
-        return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-    } catch (err) {
-        return {};
-    }
+    return { ...storage.getSwaps() };
 }
 
-function writeSwaps(swaps) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-    fs.writeFileSync(DATA_FILE, JSON.stringify(swaps, null, 2));
+async function writeSwaps(swaps) {
+    await storage.saveSwaps(swaps);
 }
 
-// settings.json holds the single shared password. sessionSecret is generated
-// once and reused so a server restart doesn't log you out.
-function readSettings() {
-    try {
-        return JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8'));
-    } catch (err) {
-        return {};
-    }
-}
-
-function loadOrCreateSettings() {
-    const settings = readSettings();
+// settings holds the single shared password. sessionSecret is generated once
+// and reused so a server restart doesn't log you out.
+async function loadOrCreateSettings() {
+    // Only fields NOT supplied by the environment need to be stored. If both
+    // come from env vars, settings.json is never written - no stale, ignored
+    // password sitting in the data store pretending to be live.
+    const settings = storage.getSettings();
     let changed = false;
 
-    if (typeof settings.password !== 'string' || settings.password === '') {
+    if (!PASSWORD_FROM_ENV && (typeof settings.password !== 'string' || settings.password === '')) {
         settings.password = DEFAULT_PASSWORD;
         changed = true;
     }
-    if (typeof settings.sessionSecret !== 'string' || settings.sessionSecret === '') {
+    if (!SESSION_SECRET_FROM_ENV && (typeof settings.sessionSecret !== 'string' || settings.sessionSecret === '')) {
         settings.sessionSecret = crypto.randomBytes(32).toString('hex');
         changed = true;
     }
 
     if (changed) {
-        fs.mkdirSync(DATA_DIR, { recursive: true });
-        fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2));
-        console.log(`Wrote settings to ${SETTINGS_FILE}`);
+        await storage.saveSettings(settings);
+        console.log('Wrote settings to storage.');
     }
-    if (settings.password === DEFAULT_PASSWORD) {
+
+    if (PASSWORD_FROM_ENV && SESSION_SECRET_FROM_ENV) {
+        console.log('Auth fully configured from the environment; settings.json not used.');
+    } else if (PASSWORD_FROM_ENV) {
+        console.log('Password from SCHEDULE_PASSWORD; sessionSecret from settings.json.');
+    } else if (currentPassword() === DEFAULT_PASSWORD) {
         console.warn(`WARNING: still using the default password "${DEFAULT_PASSWORD}". ` +
-                     `Edit "password" in ${SETTINGS_FILE} and restart.`);
+                     'Change it (settings.json "password", or the SCHEDULE_PASSWORD env var) and restart.');
     }
     return settings;
 }
 
-const settings = loadOrCreateSettings();
+function currentPassword() {
+    return PASSWORD_FROM_ENV || storage.getSettings().password || '';
+}
+
+function sessionSecret() {
+    return SESSION_SECRET_FROM_ENV || storage.getSettings().sessionSecret || '';
+}
 
 // Constant-time compare so response timing doesn't leak the password.
+function safeEqual(a, b) {
+    const bufA = Buffer.from(String(a));
+    const bufB = Buffer.from(String(b));
+    if (bufA.length !== bufB.length) return false;
+    return crypto.timingSafeEqual(bufA, bufB);
+}
+
 function passwordMatches(candidate) {
-    if (typeof candidate !== 'string') return false;
-    const a = Buffer.from(candidate);
-    const b = Buffer.from(readSettings().password || settings.password);
-    if (a.length !== b.length) return false;
-    return crypto.timingSafeEqual(a, b);
+    if (typeof candidate !== 'string' || candidate === '') return false;
+    return safeEqual(candidate, currentPassword());
 }
 
 function sessionToken() {
     // Derived from the secret + current password, so changing the password
     // invalidates existing cookies.
-    return crypto.createHmac('sha256', settings.sessionSecret)
-        .update(readSettings().password || settings.password)
+    return crypto.createHmac('sha256', sessionSecret())
+        .update(currentPassword())
         .digest('hex');
 }
 
@@ -100,14 +109,15 @@ function parseCookies(req) {
 function isAuthenticated(req) {
     const token = parseCookies(req)[COOKIE_NAME];
     if (!token) return false;
-    const expected = sessionToken();
-    const a = Buffer.from(token);
-    const b = Buffer.from(expected);
-    if (a.length !== b.length) return false;
-    return crypto.timingSafeEqual(a, b);
+    return safeEqual(token, sessionToken());
 }
 
 app.use(express.json());
+
+// Unauthenticated liveness probe for Azure health checks.
+app.get('/api/health', (req, res) => {
+    res.json({ ok: true, storage: storage.backend });
+});
 
 // ---- Public: login page and login/logout endpoints ----
 
@@ -155,45 +165,77 @@ app.get('/api/swaps', (req, res) => {
     res.json(readSwaps());
 });
 
-app.post('/api/swaps', (req, res) => {
+app.post('/api/swaps', async (req, res, next) => {
     const { date1, status1, date2, status2 } = req.body || {};
 
     if (!date1 || !date2 || !VALID_STATUSES.includes(status1) || !VALID_STATUSES.includes(status2)) {
         return res.status(400).json({ error: 'date1, date2 and valid work/off statuses are required' });
     }
 
-    const swaps = readSwaps();
-    swaps[date1] = { status: status1, pairedWith: date2 };
-    swaps[date2] = { status: status2, pairedWith: date1 };
-    writeSwaps(swaps);
-    res.json(swaps);
+    try {
+        const swaps = readSwaps();
+        swaps[date1] = { status: status1, pairedWith: date2 };
+        swaps[date2] = { status: status2, pairedWith: date1 };
+        await writeSwaps(swaps);
+        res.json(swaps);
+    } catch (err) {
+        next(err);
+    }
 });
 
-app.post('/api/swaps/single', (req, res) => {
+app.post('/api/swaps/single', async (req, res, next) => {
     const { date, status } = req.body || {};
 
     if (!date || !VALID_STATUSES.includes(status)) {
         return res.status(400).json({ error: 'date and a valid work/off status are required' });
     }
 
-    const swaps = readSwaps();
-    swaps[date] = { status, pairedWith: null };
-    writeSwaps(swaps);
-    res.json(swaps);
-});
-
-app.delete('/api/swaps/:date', (req, res) => {
-    const swaps = readSwaps();
-    const entry = swaps[req.params.date];
-    delete swaps[req.params.date];
-    // A swap always involves two dates - undoing one side undoes both.
-    if (entry && entry.pairedWith) {
-        delete swaps[entry.pairedWith];
+    try {
+        const swaps = readSwaps();
+        swaps[date] = { status, pairedWith: null };
+        await writeSwaps(swaps);
+        res.json(swaps);
+    } catch (err) {
+        next(err);
     }
-    writeSwaps(swaps);
-    res.json(swaps);
 });
 
-app.listen(PORT, () => {
-    console.log(`Schedule generator listening on port ${PORT}`);
+app.delete('/api/swaps/:date', async (req, res, next) => {
+    try {
+        const swaps = readSwaps();
+        const entry = swaps[req.params.date];
+        delete swaps[req.params.date];
+        // A swap always involves two dates - undoing one side undoes both.
+        if (entry && entry.pairedWith) {
+            delete swaps[entry.pairedWith];
+        }
+        await writeSwaps(swaps);
+        res.json(swaps);
+    } catch (err) {
+        next(err);
+    }
+});
+
+// Surfacing storage failures instead of hanging the request.
+app.use((err, req, res, next) => {
+    console.error('Request failed:', err);
+    if (err && err.conflict) {
+        return res.status(409).json({
+            error: 'That change conflicted with another update. Reload and try again.'
+        });
+    }
+    res.status(500).json({ error: 'Storage error - could not save changes.' });
+});
+
+async function start() {
+    await storage.init();
+    await loadOrCreateSettings();
+    app.listen(PORT, () => {
+        console.log(`Schedule generator listening on port ${PORT}`);
+    });
+}
+
+start().catch(err => {
+    console.error('Failed to start:', err.message);
+    process.exit(1);
 });
