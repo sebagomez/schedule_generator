@@ -15,8 +15,19 @@ name_prefix = "schedulegen"
 
 location = "eastus"
 
+# An EXISTING storage account Terraform reads via a data source - it does not
+# create or manage the account itself, only the blob container inside it.
+# storage_account_name                = "sebagomez"
+# storage_account_resource_group_name = "teststorageaccount"
+
 # The specific blob container for the app's JSON documents.
 storage_container_name = "schedule-data"
+
+# Public Docker Hub image Terraform deploys. Terraform doesn't build or push
+# it - build and push locally (docker build && docker push), then set
+# image_tag below to a tag that changes to trigger a new revision.
+# docker_image = "sebagomez/schedule_generator"
+# image_tag    = "latest"
 
 # 0 = scale to zero when idle (cheapest, few seconds' cold start on next request)
 # 1 = always warm, billed continuously

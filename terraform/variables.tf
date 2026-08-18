@@ -1,11 +1,11 @@
 variable "name_prefix" {
-  description = "Prefix for resource names. Keep it short: it feeds globally-unique storage and registry names."
+  description = "Prefix for resource names (resource group, Container Apps environment/app, log analytics workspace)."
   type        = string
   default     = "schedulegen"
 
   validation {
     condition     = can(regex("^[a-z0-9]{3,12}$", var.name_prefix))
-    error_message = "name_prefix must be 3-12 lowercase letters/digits (storage and ACR names allow nothing else)."
+    error_message = "name_prefix must be 3-12 lowercase letters/digits."
   }
 }
 
@@ -42,19 +42,40 @@ variable "session_secret" {
   default     = ""
 }
 
+variable "storage_account_name" {
+  description = "Name of an EXISTING storage account to use. Terraform does not create or manage its lifecycle - it's only read via a data source."
+  type        = string
+  default     = "sebagomez"
+}
+
+variable "storage_account_resource_group_name" {
+  description = "Resource group containing the existing storage account named by storage_account_name."
+  type        = string
+  default     = "teststorageaccount"
+}
+
 variable "storage_container_name" {
-  description = "Blob container holding swaps.json (and settings.json, if not fully env-configured)."
+  description = "Blob container holding swaps.json (and settings.json, if not fully env-configured). Created by Terraform inside the existing storage account if it doesn't already exist."
   type        = string
   default     = "schedule-data"
 }
 
+variable "docker_image" {
+  description = "Docker Hub repository to deploy, as \"namespace/repo\" (public - no pull credentials configured)."
+  type        = string
+  default     = "sebagomez/schedule_generator"
+}
+
 variable "image_tag" {
   description = <<-EOT
-    Image tag to deploy. Empty means derive it from a hash of the app source, so
-    editing the app produces a new tag, a new image build and a new revision.
+    Tag to deploy from docker_image. Terraform doesn't build or push images, so
+    to roll out a new build: push it to Docker Hub, then set this to a tag that
+    changes (a version, a git sha, ...) and re-apply. Re-applying with an
+    unchanged tag (e.g. "latest") won't produce a new revision even if the image
+    behind that tag changed.
   EOT
   type        = string
-  default     = ""
+  default     = "latest"
 }
 
 variable "cpu" {

@@ -76,6 +76,9 @@ secret — but it no longer contains a stale, ignored `password` field.
 ## Deploy
 
 ```bash
+docker build -t sebagomez/schedule_generator:latest .
+docker push sebagomez/schedule_generator:latest
+
 az login
 cd terraform
 cp terraform.tfvars.example terraform.tfvars   # set schedule_password
@@ -85,24 +88,24 @@ terraform apply
 terraform output app_url
 ```
 
-Terraform provisions the resource group, storage account, blob container,
-container registry, Log Analytics workspace, Container Apps environment and the
-app; wires the connection string, password and session secret in as **Container
-Apps secrets**; and builds the image with `az acr build` (server-side, so no
-local Docker needed).
+Terraform provisions the resource group, blob container, Log Analytics
+workspace, Container Apps environment and the app; wires the connection
+string, password and session secret in as **Container Apps secrets**; and
+deploys the public Docker Hub image `sebagomez/schedule_generator` — Terraform
+doesn't build or push it, so build and push it yourself first. The storage
+account itself is **not** created by Terraform — it must already exist
+(`storage_account_name` / `storage_account_resource_group_name`), and is only
+read via a data source for its connection string.
 
-Redeploying a code change is just `terraform apply` again — the image tag is
-derived from a hash of the app source, so any edit yields a new tag, a new build
-and a new revision.
+Redeploying a code change means building and pushing a new image, then
+`terraform apply` again with `image_tag` set to something new (a version, a git
+sha). Container Apps only rolls out a new revision when the deployed image
+*reference* changes — re-applying with an unchanged tag like `latest` won't pick
+up a new push behind that tag.
 
 If you don't set `session_secret`, Terraform generates one and keeps it in state,
 so it stays stable across applies (unlike a shell script, which would have
 regenerated it every run).
-
-The script creates the resource group, storage account, blob container, Container
-Apps environment and the app itself; wires the connection string and password in
-as **Container Apps secrets** (referenced via `secretref:`, not plain env values);
-and prints the resulting HTTPS URL. Re-running updates the existing app.
 
 ## Critical constraint: exactly one replica
 

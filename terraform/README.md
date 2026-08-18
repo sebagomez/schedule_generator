@@ -1,8 +1,12 @@
 # Terraform — schedule generator infrastructure
 
-Provisions the app on **Azure Container Apps** with **Azure Blob Storage** for
-persistence, and builds the container image with **ACR Tasks** (so no local
-Docker daemon is needed).
+Provisions the app on **Azure Container Apps**, persisting to a blob container
+inside an **existing Azure Storage account** (configurable via
+`storage_account_name` / `storage_account_resource_group_name`; Terraform only
+reads it via a data source — it doesn't create or manage the account itself).
+The image is **not built by Terraform** either — it deploys the public Docker
+Hub image `sebagomez/schedule_generator` (configurable via `docker_image` /
+`image_tag`); build and push it yourself.
 
 > **Not validated against Azure.** Neither `terraform` nor the `az` CLI is
 > installed in the environment where this was written, so it has never been
@@ -14,21 +18,29 @@ Docker daemon is needed).
 | Resource | Notes |
 |---|---|
 | Resource group | `rg-<name_prefix>` unless overridden |
-| Storage account + blob container | `private`, TLS 1.2, no public blobs, 7-day soft delete + versioning |
-| Container registry | Basic SKU, admin user enabled (see below) |
+| Blob container `private` | Created inside the *existing* storage account named by `storage_account_name` |
 | Log Analytics workspace | Required by Container Apps |
 | Container Apps environment | |
-| Container App | External ingress on port 3000, 1 replica max, health probes on `/api/health` |
+| Container App | External ingress on port 3000, 1 replica max, health probes on `/api/health`, pulls `docker_image:image_tag` from Docker Hub (public, no registry credentials configured) |
+
+Not created: the storage account itself. It must already exist (default
+`sebagomez` in resource group `teststorageaccount`) — Terraform only reads it
+via a data source to get its connection string.
 
 ## Prerequisites
 
 - Terraform >= 1.5
-- Azure CLI, logged in (`az login`) — used by the image build step
+- Azure CLI, logged in (`az login`)
 - A subscription selected (`az account set --subscription ...`), or `ARM_SUBSCRIPTION_ID` exported
+- Docker, to build and push `sebagomez/schedule_generator` yourself
+- An existing storage account (see `storage_account_name` / `storage_account_resource_group_name`)
 
 ## Usage
 
 ```bash
+docker build -t sebagomez/schedule_generator:latest .
+docker push sebagomez/schedule_generator:latest
+
 cd terraform
 cp terraform.tfvars.example terraform.tfvars
 # edit terraform.tfvars: set schedule_password at minimum
@@ -40,9 +52,11 @@ terraform apply
 terraform output app_url
 ```
 
-To deploy a code change, just `terraform apply` again: the image tag is derived
-from a hash of the app source files, so editing `server.js` (or any other listed
-file) produces a new tag, a fresh `az acr build`, and a new revision.
+To deploy a code change: build and push a new image, then re-`apply`. Container
+Apps only creates a new revision when the deployed image *reference* changes, so
+pushing over an unchanged tag (e.g. `latest`) and re-running `apply` won't roll
+it out — set `image_tag` to something that changes (a version, a git sha) each
+time you want a new revision.
 
 ## Seeding existing data
 
@@ -86,32 +100,31 @@ This is safe *because* persistence is in blob storage: the in-memory cache in
 when the replica is reclaimed. Set `min_replicas = 1` to keep it warm instead.
 `min_replicas` is validated to 0 or 1.
 
-**Registry admin credentials, not managed identity.** A system-assigned identity
-with an `AcrPull` role assignment is the tidier pattern, but it has a
-creation-order race: the app must pull its image before its identity exists and
-the role propagates. Admin credentials avoid that. The password is stored as a
-Container Apps secret, not an env var.
+**No container registry.** The app deploys straight from a public Docker Hub
+repo, so there's no ACR, no registry credentials, and no `az acr build` step to
+depend on. The tradeoff: building and pushing the image is on you, and Terraform
+has no way to detect that a new image landed behind an unchanged tag (see
+"Usage" above).
 
-**Image build is a `null_resource`.** Terraform doesn't build images. Rather than
-requiring a separate manual `docker build && docker push`, a `local-exec` calls
-`az acr build`, which builds server-side. Consequences: the apply depends on the
-`az` CLI being present and authenticated, and it's not something `terraform plan`
-can preview meaningfully.
+**Secrets land in state.** `schedule_password`, the generated `session_secret`
+and the storage connection string are all in `terraform.tfstate`. Local state
+is the default; for anything shared, uncomment the `azurerm` backend in
+`versions.tf` and keep the state in a private container.
 
-**Secrets land in state.** `schedule_password`, the generated `session_secret`,
-the storage connection string and the registry password are all in
-`terraform.tfstate`. Local state is the default; for anything shared, uncomment
-the `azurerm` backend in `versions.tf` and keep the state in a private container.
+**Storage account is a data source, not a resource.** It's read-only from
+Terraform's perspective — `terraform destroy` never touches it, and running
+this config against someone else's storage account can't accidentally modify
+or delete it. Only the blob container inside it is managed (created/destroyed)
+by Terraform.
 
 ## Provider version
 
 Pinned to `azurerm ~> 3.116`. To move to 4.x:
 
 - `azurerm_storage_container.storage_account_name` → `storage_account_id`
-- `azurerm_storage_account.enable_https_traffic_only` → `https_traffic_only_enabled`
 - The provider requires an explicit `subscription_id` (or `ARM_SUBSCRIPTION_ID`)
 
-Both renamed attributes are flagged with a comment in `main.tf`.
+That renamed attribute is flagged with a comment in `main.tf`.
 
 ## Teardown
 
@@ -119,5 +132,6 @@ Both renamed attributes are flagged with a comment in `main.tf`.
 terraform destroy
 ```
 
-This deletes the storage account, and with it your schedule overrides. Download
-`swaps.json` first if you care about it.
+This deletes the blob container — and with it your schedule overrides — but
+leaves the storage account itself untouched (Terraform never created it).
+Download `swaps.json` first if you care about it.

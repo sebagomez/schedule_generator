@@ -1,36 +1,10 @@
 locals {
   resource_group_name = var.resource_group_name != "" ? var.resource_group_name : "rg-${var.name_prefix}"
 
-  # Files whose contents determine the image. Changing any of them changes the
-  # derived tag, which triggers a rebuild and a new Container Apps revision.
-  source_files = [
-    "Dockerfile",
-    "package.json",
-    "server.js",
-    "storage.js",
-    "script.js",
-    "style.css",
-    "schedule_generator.html",
-    "login.html",
-  ]
-
-  source_hash = substr(sha1(join("", [
-    for f in local.source_files : filesha256("${path.module}/../${f}")
-  ])), 0, 12)
-
-  image_tag  = var.image_tag != "" ? var.image_tag : local.source_hash
-  image_name = "schedule-generator"
+  # Public Docker Hub image, built and pushed outside of Terraform.
+  image = "docker.io/${var.docker_image}:${var.image_tag}"
 
   session_secret = var.session_secret != "" ? var.session_secret : random_password.session_secret.result
-}
-
-# Suffix keeps globally-unique names (storage account, registry) collision-free.
-resource "random_string" "suffix" {
-  length  = 6
-  lower   = true
-  upper   = false
-  numeric = true
-  special = false
 }
 
 resource "random_password" "session_secret" {
@@ -47,76 +21,20 @@ resource "azurerm_resource_group" "main" {
 # ------------------------------------------------------------------ storage
 # Holds swaps.json (and settings.json when auth isn't fully env-configured).
 # The container filesystem is ephemeral, which is why this exists.
+#
+# Uses a pre-existing storage account (not created or lifecycle-managed by
+# Terraform) - only the blob container inside it is managed here.
 
-resource "azurerm_storage_account" "main" {
-  name                = "st${var.name_prefix}${random_string.suffix.result}"
-  resource_group_name = azurerm_resource_group.main.name
-  location            = azurerm_resource_group.main.location
-  tags                = var.tags
-
-  account_tier             = "Standard"
-  account_replication_type = "LRS"
-  account_kind             = "StorageV2"
-
-  # NOTE: azurerm 3.x attribute names. In 4.x, enable_https_traffic_only was
-  # renamed to https_traffic_only_enabled.
-  min_tls_version                 = "TLS1_2"
-  enable_https_traffic_only       = true
-  allow_nested_items_to_be_public = false
-  public_network_access_enabled    = true
-  shared_access_key_enabled       = true
-
-  blob_properties {
-    # Cheap insurance for a hand-editable JSON document.
-    delete_retention_policy {
-      days = 7
-    }
-    versioning_enabled = true
-  }
+data "azurerm_storage_account" "main" {
+  name                = var.storage_account_name
+  resource_group_name = var.storage_account_resource_group_name
 }
 
 resource "azurerm_storage_container" "data" {
   name = var.storage_container_name
   # azurerm 3.x attribute; in 4.x this becomes storage_account_id.
-  storage_account_name  = azurerm_storage_account.main.name
+  storage_account_name  = data.azurerm_storage_account.main.name
   container_access_type = "private"
-}
-
-# ----------------------------------------------------------------- registry
-# Admin credentials are enabled so the Container App can pull with a
-# username/password secret. The tidier alternative is a system-assigned identity
-# plus an AcrPull role assignment, but that has a creation-order race: the app
-# must pull an image before its identity exists. Fine for a single-user tool.
-
-resource "azurerm_container_registry" "main" {
-  name                = "cr${var.name_prefix}${random_string.suffix.result}"
-  resource_group_name = azurerm_resource_group.main.name
-  location            = azurerm_resource_group.main.location
-  sku                 = "Basic"
-  admin_enabled       = true
-  tags                = var.tags
-}
-
-# Builds the image in Azure (ACR Tasks), so no local Docker daemon is needed.
-# Requires the Azure CLI to be installed and logged in.
-resource "null_resource" "image_build" {
-  triggers = {
-    image_tag = local.image_tag
-    registry  = azurerm_container_registry.main.name
-  }
-
-  provisioner "local-exec" {
-    working_dir = "${path.module}/.."
-    command     = <<-EOT
-      az acr build \
-        --registry ${azurerm_container_registry.main.name} \
-        --image ${local.image_name}:${local.image_tag} \
-        --file Dockerfile \
-        .
-    EOT
-  }
-
-  depends_on = [azurerm_container_registry.main]
 }
 
 # ----------------------------------------------------------- container apps
@@ -147,7 +65,7 @@ resource "azurerm_container_app" "main" {
 
   secret {
     name  = "storage-connection-string"
-    value = azurerm_storage_account.main.primary_connection_string
+    value = data.azurerm_storage_account.main.primary_connection_string
   }
 
   secret {
@@ -158,17 +76,6 @@ resource "azurerm_container_app" "main" {
   secret {
     name  = "session-secret"
     value = local.session_secret
-  }
-
-  secret {
-    name  = "registry-password"
-    value = azurerm_container_registry.main.admin_password
-  }
-
-  registry {
-    server               = azurerm_container_registry.main.login_server
-    username             = azurerm_container_registry.main.admin_username
-    password_secret_name = "registry-password"
   }
 
   ingress {
@@ -196,7 +103,7 @@ resource "azurerm_container_app" "main" {
 
     container {
       name   = "schedule-generator"
-      image  = "${azurerm_container_registry.main.login_server}/${local.image_name}:${local.image_tag}"
+      image  = local.image
       cpu    = var.cpu
       memory = var.memory
 
@@ -262,8 +169,5 @@ resource "azurerm_container_app" "main" {
     }
   }
 
-  depends_on = [
-    null_resource.image_build,
-    azurerm_storage_container.data,
-  ]
+  depends_on = [azurerm_storage_container.data]
 }

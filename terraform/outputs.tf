@@ -14,20 +14,16 @@ output "resource_group_name" {
 
 output "storage_account_name" {
   description = "Upload existing data/swaps.json here to seed the schedule."
-  value       = azurerm_storage_account.main.name
+  value       = data.azurerm_storage_account.main.name
 }
 
 output "storage_container_name" {
   value = azurerm_storage_container.data.name
 }
 
-output "container_registry" {
-  value = azurerm_container_registry.main.login_server
-}
-
-output "deployed_image_tag" {
-  description = "Derived from a hash of the app source unless image_tag was set."
-  value       = local.image_tag
+output "deployed_image" {
+  description = "The Docker Hub image and tag deployed."
+  value       = local.image
 }
 
 output "session_secret" {

@@ -26,7 +26,7 @@ Single-user personal tool: no database, no user accounts, no build step, no test
 - **Opening `schedule_generator.html` directly as a file no longer works properly** — the page is served behind the auth gate, and there's no CSV fallback anymore. Run the server.
 - **Docker**: `docker compose up --build`. Compose bind-mounts `./data:/app/data`, so `data/*.json` appears in the project folder on the host and survives rebuilds. Don't run without something mounted at `/app/data` if persistence matters.
 - **Configuration**: every setting is documented in [.env.example](.env.example) (copy to `.env`, which is gitignored). `SCHEDULE_PASSWORD` and `SESSION_SECRET` override the corresponding `settings.json` fields; supplying both means the file is never created. `COOKIE_SECURE` must be `false` for plain-HTTP local/LAN use and `true` over HTTPS — getting it wrong causes a silent login loop, because the browser drops the cookie.
-- **Azure**: infrastructure is Terraform under [terraform/](terraform/) ([terraform/README.md](terraform/README.md)); the deployment narrative is in [DEPLOY-AZURE.md](DEPLOY-AZURE.md). Target is Container Apps + Blob Storage, with the image built by `az acr build` (no local Docker needed). **Unvalidated** — `terraform`, `az` and `docker` are all absent from this dev environment, so it has never been planned or applied. There is deliberately no shell deploy script; Terraform replaced it.
+- **Azure**: infrastructure is Terraform under [terraform/](terraform/) ([terraform/README.md](terraform/README.md)); the deployment narrative is in [DEPLOY-AZURE.md](DEPLOY-AZURE.md). Target is Container Apps + Blob Storage, deploying the public Docker Hub image `sebagomez/schedule_generator` (built and pushed manually — Terraform doesn't build images). **The Terraform plan/apply itself is unvalidated** against a real Azure subscription.
 - **Dependencies**: `express` and `@azure/storage-blob`. There is deliberately **no npm lockfile** — npm is blocked in this dev environment so `pnpm-lock.yaml` is authoritative, and the Dockerfile copies only `package.json` and runs `npm install`. Don't re-add a stale `package-lock.json`.
 
 ## Architecture
@@ -142,8 +142,9 @@ require time. The image declares the `AZURE_STORAGE_*` / `SCHEDULE_PASSWORD` /
 `COOKIE_SECURE` variables as empty defaults: credentials are injected at runtime
 and **must never be baked into the image**.
 
-The image build has not been verified — Docker isn't installed in this workspace.
-On Azure the image is built by ACR Tasks from this same Dockerfile, so anything
+On Azure, Terraform doesn't build the image — it deploys the public Docker Hub
+image `sebagomez/schedule_generator` (see `terraform/README.md`), built and
+pushed with `docker build`/`docker push` from this same Dockerfile. Anything
 missing from a `COPY` line breaks the deployed app too.
 
 ### [terraform/](terraform/)
@@ -153,10 +154,9 @@ missing from a `COPY` line breaks the deployed app too.
 Key invariants, all explained in `terraform/README.md`:
 
 - `max_replicas = 1` is hard-coded, for the storage-cache reason above. `min_replicas` is a 0-or-1 variable.
-- The image tag defaults to a hash of the app source files listed in `locals.source_files`. **If you add a new runtime file, add it to that list** or code changes won't produce a new image.
-- A `null_resource` + `local-exec` runs `az acr build`; Terraform itself never builds images.
-- Registry admin credentials are used instead of managed identity, to dodge a creation-order race.
-- Secrets (password, session secret, connection string, registry password) end up in Terraform state — `*.tfvars` and `*.tfstate` are gitignored, `.terraform.lock.hcl` is intentionally **not**.
+- Terraform never builds or pushes images. It deploys the public Docker Hub image named by `docker_image`/`image_tag` (default `sebagomez/schedule_generator:latest`, no registry credentials configured). Build and push it yourself; re-`apply` only rolls out a new revision if `image_tag` actually changes.
+- The storage account is a `data` source (`storage_account_name`/`storage_account_resource_group_name`, default `sebagomez`/`teststorageaccount`), not a managed resource — Terraform never creates or destroys it, only the blob container inside it.
+- Secrets (password, session secret, connection string) end up in Terraform state — `*.tfvars` and `*.tfstate` are gitignored, `.terraform.lock.hcl` is intentionally **not**.
 
 ## Notes for changes
 

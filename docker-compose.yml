@@ -14,9 +14,34 @@ services:
       DATA_DIR: /app/data
       # Local/LAN over plain HTTP - must stay false or the cookie is dropped.
       COOKIE_SECURE: "false"
+      # Talk to the azurite container below instead of local files, using
+      # azurite's well-known dev account. Unset these (or set STORAGE_BACKEND=local
+      # in .env) to go back to flat files under ./data.
+      AZURE_STORAGE_CONNECTION_STRING: "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://azurite:10000/devstoreaccount1;"
+      AZURE_STORAGE_CONTAINER: schedule-data
+    depends_on:
+      azurite:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3000/api/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
       interval: 30s
       timeout: 3s
       retries: 3
+
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite
+    command: "azurite-blob --blobHost 0.0.0.0 --blobPort 10000 -l /data --skipApiVersionCheck"
+    ports:
+      - "10000:10000"
+    volumes:
+      - azurite-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:10000/devstoreaccount1?comp=list',r=>process.exit(0)).on('error',()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  azurite-data:
