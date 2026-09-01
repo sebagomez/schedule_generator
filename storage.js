@@ -67,9 +67,23 @@ function localRead(doc) {
 }
 
 function localWrite(doc, value) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-    fs.writeFileSync(localPath(doc), JSON.stringify(value, null, 2));
+    try {
+        fs.mkdirSync(DATA_DIR, { recursive: true });
+        fs.writeFileSync(localPath(doc), JSON.stringify(value, null, 2));
+    } catch (err) {
+        if (err.code === 'EACCES' || err.code === 'EPERM') {
+            throw new Error(
+                `Cannot write to ${DATA_DIR} (${err.code}). If this is a container, the ` +
+                'mounted directory is probably not writable by the non-root "node" user ' +
+                '(uid 1000). With podman try mounting as "-v ./data:/app/data:U", or run ' +
+                'with "--user 0"; with docker, chown the host directory to uid 1000. ' +
+                'See the Docker section of AGENTS.md.'
+            );
+        }
+        throw err;
+    }
 }
+
 
 // ----------------------------------------------------------------- azure blob
 

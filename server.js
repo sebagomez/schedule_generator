@@ -114,9 +114,33 @@ function isAuthenticated(req) {
 
 app.use(express.json());
 
-// Unauthenticated liveness probe for Azure health checks.
+// Startup state. The server listens immediately and reports its readiness here,
+// rather than staying dark until storage is up - otherwise a storage failure
+// looks like "connection refused" and the real reason is invisible to probes.
+const startup = { ready: false, error: null };
+
+// LIVENESS: 200 as long as the process is alive, even while storage is broken.
+// Returning 503 here would make the platform kill a container that is only
+// misconfigured, hiding the error behind a crash loop.
 app.get('/api/health', (req, res) => {
-    res.json({ ok: true, storage: storage.backend });
+    res.json({
+        ok: true,
+        ready: startup.ready,
+        storage: storage.backend,
+        error: startup.error
+    });
+});
+
+// READINESS: only 200 once storage has loaded, so traffic isn't routed early.
+app.get('/api/ready', (req, res) => {
+    if (startup.ready) return res.json({ ready: true, storage: storage.backend });
+    res.status(503).json({ ready: false, storage: storage.backend, error: startup.error });
+});
+
+// Everything else needs storage; fail clearly instead of serving empty data.
+app.use((req, res, next) => {
+    if (startup.ready || req.path === '/api/health' || req.path === '/api/ready') return next();
+    res.status(503).json({ error: 'Starting up - storage is not ready yet.', detail: startup.error });
 });
 
 // ---- Public: login page and login/logout endpoints ----
@@ -227,15 +251,26 @@ app.use((err, req, res, next) => {
     res.status(500).json({ error: 'Storage error - could not save changes.' });
 });
 
-async function start() {
-    await storage.init();
-    await loadOrCreateSettings();
+// Listen first so health probes and logs can report what's wrong, then bring up
+// storage. Keeping the process alive on failure beats crash-looping: the error
+// is readable at /api/health and in the console instead of vanishing with the
+// container.
+function start() {
     app.listen(PORT, () => {
-        console.log(`Schedule generator listening on port ${PORT}`);
+        console.log(`Schedule generator listening on port ${PORT} (storage initialising)`);
     });
+
+    storage.init()
+        .then(loadOrCreateSettings)
+        .then(() => {
+            startup.ready = true;
+            console.log('Storage ready; serving requests.');
+        })
+        .catch(err => {
+            startup.error = err.message;
+            console.error('STORAGE INITIALISATION FAILED:', err.message);
+            console.error('The app is listening but will return 503 until this is fixed.');
+        });
 }
 
-start().catch(err => {
-    console.error('Failed to start:', err.message);
-    process.exit(1);
-});
+start();

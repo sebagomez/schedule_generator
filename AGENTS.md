@@ -99,8 +99,18 @@ goes through `storage.js` — there are no `fs` calls left in this file. The wri
 endpoints are `async` and funnel storage failures into an error-handling
 middleware that returns a 500 rather than hanging the request.
 
-`GET /api/health` is an unauthenticated liveness probe returning
-`{ ok, storage }`; it's used by the Docker `HEALTHCHECK` and by Azure.
+**Startup and probes.** `server.js` calls `app.listen()` **first** and initialises
+storage in the background. This is deliberate: awaiting storage before listening
+meant any storage failure surfaced only as `connection refused`, with the real
+reason invisible to platform probes (it cost a debugging round-trip on Azure).
+Two unauthenticated endpoints, and they are not interchangeable:
+
+- `GET /api/health` — **liveness**. Always 200 while the process is alive; body is `{ ok, ready, storage, error }`. Must NOT return non-200 on a storage failure, or the platform kills a merely-misconfigured container and hides the error in a crash loop.
+- `GET /api/ready` — **readiness**. 200 only once storage loaded, else 503.
+
+Every other route returns 503 until storage is ready. A failed init no longer
+exits the process; it logs `STORAGE INITIALISATION FAILED` and keeps serving the
+two probe endpoints so the cause is visible.
 
 **Where the auth secrets live** — `settings.json` only stores what the
 environment doesn't provide:
@@ -133,8 +143,29 @@ Backed by flat JSON at `DATA_DIR/swaps.json` (`DATA_DIR` defaults to `./data`, `
 
 ### [Dockerfile](Dockerfile) / [docker-compose.yml](docker-compose.yml)
 
-`node:20-alpine` running `server.js` as the non-root `node` user, with a
-`HEALTHCHECK` hitting `/api/health`; compose bind-mounts `./data:/app/data`.
+`node:20-alpine` running `server.js` as the non-root `node` user (uid 1000), with
+a `HEALTHCHECK` hitting `/api/health`; compose bind-mounts `./data:/app/data`.
+
+**Bind mounts and the non-root user.** Because the app runs as `node`, anything
+mounted at `/app/data` must be writable by uid 1000, or startup dies with
+`EACCES: permission denied, open '/app/data/settings.json'`. The image itself is
+fine (`RUN mkdir -p /app/data && chown -R node:node /app/data`), but a bind mount
+**replaces** that directory with the host's, along with the host's ownership:
+
+- **podman (rootless)** — mount with the `:U` suffix so podman re-owns the content for the container user: `-v ./data:/app/data:U`. Compose equivalent: `- ./data:/app/data:U`.
+- **docker** — `chown -R 1000:1000 ./data` on the host, or run with `--user 0`.
+- Either runtime — a **named volume** instead of a bind mount inherits the image's ownership and just works.
+
+`storage.js` catches `EACCES`/`EPERM` on write and rethrows with those remedies
+spelled out, so the failure is self-explaining. Keep that behaviour.
+
+**Architecture — read before advising anyone to rebuild.** Azure Container Apps
+is **amd64-only**. An arm64 image exits immediately with `exec format error` and
+no application logs, which surfaces as `ContainerCrashing` plus a `connection
+refused` readiness failure.
+
+- For **Azure**: always `linux/amd64`. `az acr build` (what Terraform uses) does this server-side. A manual `podman build` on Apple Silicon does **not** — pass `--platform linux/amd64`.
+- For **local podman on Apple Silicon**: an amd64 image only warns (`image platform ... does not match`) and runs under emulation. `--platform linux/arm64` makes it native, but never push that image to Azure.
 
 **The Dockerfile `COPY`s files by name** — if you add a new HTML/CSS/JS file, or
 a new server-side module, add it to a `COPY` line or it will 404 / crash at

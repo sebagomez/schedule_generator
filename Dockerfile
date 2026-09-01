@@ -6,13 +6,13 @@ WORKDIR /app
 # Only package.json is copied: the repo uses pnpm locally (npm is blocked in the
 # dev environment), so there is no npm lockfile to trust. `npm install` resolves
 # from package.json inside the image.
-COPY package.json ./
+COPY --chown=node:node package.json ./
 RUN npm install --omit=dev && npm cache clean --force
 
 # Frontend + server files are copied explicitly. If you add a new file that has
 # to be served or required at runtime, add it here or it will 404 / crash.
-COPY schedule_generator.html login.html style.css script.js ./
-COPY server.js storage.js ./
+COPY --chown=node:node schedule_generator.html login.html style.css script.js ./
+COPY --chown=node:node server.js storage.js ./
 
 ENV NODE_ENV=production
 ENV PORT=3000
@@ -35,7 +35,14 @@ ENV SCHEDULE_PASSWORD=""
 ENV SESSION_SECRET=""
 
 # Only used by the local backend; harmless when running on blob storage.
-RUN mkdir -p /app/data
+# The chown matters: the container runs as `node` (uid 1000), and a directory
+# created by root here would be unwritable, failing at startup with
+# EACCES on /app/data/settings.json.
+#
+# NOTE: this only fixes the image's own directory. A BIND MOUNT from the host
+# replaces it, and its ownership comes from the host - see DEPLOY-AZURE.md /
+# the README for the podman/docker flags needed there.
+RUN mkdir -p /app/data && chown -R node:node /app/data
 VOLUME ["/app/data"]
 
 EXPOSE 3000

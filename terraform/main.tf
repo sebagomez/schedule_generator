@@ -157,10 +157,14 @@ resource "azurerm_container_app" "main" {
         failure_count_threshold = 3
       }
 
+      # Readiness uses a different endpoint from liveness on purpose:
+      # /api/health is 200 whenever the process is alive (so a misconfigured
+      # container isn't killed and crash-looped, hiding the error), while
+      # /api/ready is 503 until blob storage has loaded.
       readiness_probe {
         transport = "HTTP"
         port      = 3000
-        path      = "/api/health"
+        path      = "/api/ready"
 
         interval_seconds        = 10
         timeout                 = 3

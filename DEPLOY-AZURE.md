@@ -129,9 +129,43 @@ two simulated instances.
 
 ## After deploying
 
-- `GET /api/health` returns `{"ok":true,"storage":"azure-blob"}` — confirms the app came up *and* which backend it bound to.
+- `GET /api/health` — **liveness**. 200 whenever the process is alive, with a body of `{ok, ready, storage, error}`. If storage is misconfigured, `error` tells you exactly what's wrong.
+- `GET /api/ready` — **readiness**. 200 only once storage has loaded, 503 otherwise.
 - If the login page loops back on itself, `COOKIE_SECURE` is wrong for the scheme you're using.
-- Startup fails fast with a clear message if `STORAGE_BACKEND=azure-blob` but no credentials are set.
+
+The two probes are deliberately different endpoints. Liveness stays 200 on a
+storage failure so the platform doesn't kill and crash-loop a container that's
+merely misconfigured — the container stays up, and `/api/health` reports the
+reason.
+
+## Troubleshooting a crashing container
+
+Container Apps events like `ContainerCrashing`, `ReplicaUnhealthy` or
+`connection refused` on the probe are **symptoms**. The cause is in the console
+log:
+
+```bash
+az containerapp logs show -n <app> -g <rg> --type console --tail 100
+az containerapp logs show -n <app> -g <rg> --type system  --tail 50
+az containerapp revision list -n <app> -g <rg> -o table
+```
+
+| Symptom | Likely cause |
+|---|---|
+| Container exits instantly, no app logs at all | **Wrong architecture.** Container Apps is amd64-only. An arm64 image (e.g. built on Apple Silicon with `--platform linux/arm64`) dies with `exec format error`. Rebuild with `--platform linux/amd64`, or let `az acr build` do it |
+| `STORAGE INITIALISATION FAILED: ...` | Bad or missing storage credentials; the message names the variable |
+| `ImagePullBackOff` / registry errors | Registry credentials, not the app |
+| App logs look fine but probes fail | Port mismatch — `target_port` must be 3000 |
+
+### Architecture check
+
+```bash
+az acr manifest list-metadata --registry <acr> --name schedule-generator -o table
+```
+
+Building locally on an Apple Silicon Mac produces arm64 by default. That's right
+for running under local podman and **wrong for Azure**. The Terraform path uses
+`az acr build`, which builds amd64 server-side and avoids the problem entirely.
 
 ## Security caveat, restated
 
