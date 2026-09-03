@@ -1,41 +1,52 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="es">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Work Schedule Calendar</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="color-scheme" content="light">
+    <title>Calendario de Turnos</title>
     <link rel="stylesheet" href="style.css">
 </head>
-<body>
+<body data-i18n-title="appTitle">
 
     <div class="header">
-        <h1>Work Schedule Calendar</h1>
-        <p>Your schedule: Odd weeks: Work 2, Off 2, Work 3 | Even weeks: Off 2, Work 2, Off 3</p>
+        <h1 data-i18n="appTitle">Calendario de Turnos</h1>
+        <p class="subtitle" data-i18n="subtitle"></p>
     </div>
 
     <div class="controls">
-        <label for="yearSelect">Year</label>
-        <select id="yearSelect" class="year-select"></select>
+        <div class="controls-row">
+            <div class="control-group">
+                <label for="yearSelect" data-i18n="yearLabel">Año</label>
+                <select id="yearSelect" class="year-select"></select>
+            </div>
 
-        <button id="swapModeBtn" class="download-btn swap-btn" onclick="toggleSwapMode()">🔀 Swap Days</button>
-        <button id="logoutBtn" type="button" class="download-btn logout-btn">🔒 Log out</button>
+            <div class="control-group">
+                <label data-i18n="langLabel">Idioma</label>
+                <div id="langSwitcher" class="lang-switcher"></div>
+            </div>
+        </div>
 
-        <p class="swap-hint">To swap days: tap "Swap Days", then pick one work day and one off day.<span id="pointerHint"> Right-click any day for more options (mark as work/off, undo). Click a marked day (🔀/✏️) to quickly undo it.</span><span id="touchHint" hidden> Tap any day for options (mark as work/off, undo).</span><span id="fullscreenHint" hidden> Click ⛶ on any month to open it fullscreen for a screenshot.</span></p>
+        <div class="controls-actions">
+            <button id="swapModeBtn" class="download-btn swap-btn" onclick="toggleSwapMode()" data-i18n="swapDays">Intercambiar días</button>
+        </div>
+
+        <p class="swap-hint"><span id="pointerHint" data-i18n="hintPointer"></span><span id="touchHint" data-i18n="hintTouch" hidden></span><span id="fullscreenHint" data-i18n="hintFullscreen" hidden></span></p>
     </div>
 
     <div class="legend">
-        <strong>Legend:</strong>
+        <strong data-i18n="legend">Referencias:</strong>
         <div class="legend-item">
-            <span class="legend-color work-day"></span> Work Day
+            <span class="legend-color work-day"></span> <span data-i18n="workDay"></span>
         </div>
         <div class="legend-item">
-            <span class="legend-color off-day"></span> Off Day
+            <span class="legend-color off-day"></span> <span data-i18n="offDay"></span>
         </div>
         <div class="legend-item">
-            <span class="legend-color work-day swapped"></span> Swapped Day
+            <span class="legend-color work-day swapped"></span> <span data-i18n="swappedDay"></span>
         </div>
         <div class="legend-item">
-            <span class="legend-color off-day manual-edit"></span> Manually Edited Day
+            <span class="legend-color off-day manual-edit"></span> <span data-i18n="manualDay"></span>
         </div>
     </div>
 
@@ -44,14 +55,15 @@
     <div id="fullscreenOverlay" class="fullscreen-overlay" hidden>
         <div class="fullscreen-panel">
             <div class="fullscreen-toolbar">
-                <button id="fullscreenPrev" type="button" title="Previous month (←)">‹ Prev</button>
-                <button id="fullscreenNext" type="button" title="Next month (→)">Next ›</button>
-                <button id="fullscreenClose" type="button" class="fullscreen-close" title="Close (Esc)">✕ Close</button>
+                <button id="fullscreenPrev" type="button" data-i18n="fsPrev"></button>
+                <button id="fullscreenNext" type="button" data-i18n="fsNext"></button>
+                <button id="fullscreenClose" type="button" class="fullscreen-close" data-i18n="fsClose"></button>
             </div>
             <div id="fullscreenMonth" class="fullscreen-month"></div>
         </div>
     </div>
 
+    <script src="i18n.js"></script>
     <script src="script.js"></script>
 </body>
 </html>

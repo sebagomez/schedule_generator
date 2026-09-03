@@ -1,27 +1,46 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="es">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sign in - Work Schedule</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="color-scheme" content="light">
+    <title>Calendario de Turnos</title>
     <link rel="stylesheet" href="style.css">
 </head>
-<body class="login-body">
+<body class="login-body" data-i18n-title="loginTitle">
     <form id="loginForm" class="login-card" autocomplete="on">
-        <h1>Work Schedule</h1>
-        <p class="login-hint">Enter the password to view the schedule.</p>
+        <div id="langSwitcher" class="lang-switcher lang-switcher--login"></div>
 
-        <label for="password">Password</label>
+        <h1 data-i18n="loginTitle">Calendario de Turnos</h1>
+        <p class="login-hint" data-i18n="loginHint"></p>
+
+        <label for="password" data-i18n="passwordLabel">Contraseña</label>
         <input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
 
-        <button type="submit" class="download-btn">Sign in</button>
+        <button type="submit" class="download-btn" data-i18n="signIn">Ingresar</button>
         <p id="loginError" class="login-error" hidden></p>
     </form>
 
+    <script src="i18n.js"></script>
     <script>
         const form = document.getElementById('loginForm');
         const errorEl = document.getElementById('loginError');
         const passwordEl = document.getElementById('password');
+
+        applyStaticTranslations();
+        buildLanguageSwitcher(document.getElementById('langSwitcher'), () => {
+            // Re-translate any error already on screen.
+            if (!errorEl.hidden && errorEl.dataset.errorKey) {
+                errorEl.textContent = t(errorEl.dataset.errorKey, { status: errorEl.dataset.errorStatus || '' });
+            }
+        });
+
+        function showError(key, vars) {
+            errorEl.dataset.errorKey = key;
+            errorEl.dataset.errorStatus = (vars && vars.status) || '';
+            errorEl.textContent = t(key, vars);
+            errorEl.hidden = false;
+        }
 
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
@@ -39,14 +58,15 @@
                     return;
                 }
 
-                errorEl.textContent = res.status === 401
-                    ? 'Incorrect password. Try again.'
-                    : `Could not sign in (error ${res.status}).`;
+                if (res.status === 401) {
+                    showError('errWrongPassword');
+                } else {
+                    showError('errSignIn', { status: res.status });
+                }
             } catch (err) {
-                errorEl.textContent = 'Could not reach the server.';
+                showError('errNetwork');
             }
 
-            errorEl.hidden = false;
             passwordEl.value = '';
             passwordEl.focus();
         });

@@ -19,8 +19,9 @@ const PASSWORD_FROM_ENV = process.env.SCHEDULE_PASSWORD || '';
 const SESSION_SECRET_FROM_ENV = process.env.SESSION_SECRET || '';
 
 // Files that must stay reachable without a session, or the login page can't
-// render. style.css is shared with the app but contains nothing sensitive.
-const PUBLIC_FILES = ['/login', '/login.html', '/style.css', '/favicon.ico'];
+// render. style.css and i18n.js are shared with the app but contain nothing
+// sensitive - the login page needs both (styling and its translations).
+const PUBLIC_FILES = ['/login', '/login.html', '/style.css', '/i18n.js', '/favicon.ico'];
 
 // Shallow copy: handlers mutate the result in place, and a failed save must not
 // leave the cached document holding changes that were never persisted. Entries
