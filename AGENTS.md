@@ -56,7 +56,20 @@ Single-user personal tool: no database, no user accounts, no build step, no test
   - When on: `fullscreenMonth` holds the month index being shown, or `null`. `openFullscreen()` / `closeFullscreen()` / `stepFullscreen(±1)` drive a `#fullscreenOverlay` modal with larger cells, intended for screenshots. Prev/Next buttons, `←`/`→` keys, `Esc` and click-outside all work. Days stay fully interactive there because it reuses the same `buildMonth`/`createDayCell` builders.
   - The `@media print` rules that hide the full-year grid are scoped to `body.fullscreen-open`, so printing with the feature off still prints the grid rather than a blank page. Keep that scoping if you touch the print styles.
 - **`render()` is the single re-render entry point** — it calls `generateCalendar()` *and* `renderFullscreen()` so the grid and the open fullscreen month can never drift apart. Always call `render()` (not `generateCalendar()`) after mutating `swapOverrides`.
-- **`logout()`**: `POST`s `/api/logout` and redirects to `/login`.
+- **No logout button, by design.** This is a shared household calendar and the session is meant to persist; the button was removed on request. `POST /api/logout` still exists server-side as an escape hatch. Don't re-add the button without being asked.
+
+### [i18n.js](i18n.js)
+
+Translations and language handling, shared by the app **and** the login page.
+
+- Languages are Spanish (**default**), English and Italian, declared in `LANGUAGES` with a `locale` each. The flag shown for Spanish is the **Uruguayan** one (🇺🇾), deliberately, by request — don't "correct" it to 🇪🇸.
+- `TRANSLATIONS` holds one flat key→string table per language. **Keep the key sets identical across all three**; `t()` falls back to Spanish, then to the raw key.
+- **Month and weekday names are not stored** — `monthName()`, `weekdayNames()` and `formatLongDate()` derive them from `Intl` using the active locale, so adding a language costs no date strings.
+- Static markup is translated by `data-i18n` / `data-i18n-title` attributes plus `applyStaticTranslations()`; `<body data-i18n-title>` sets `document.title`. Anything built in JS calls `t()` directly.
+- `buildLanguageSwitcher()` renders the flag buttons; the app passes `refreshLanguage()` as its callback, which re-applies static text, re-syncs the swap button label (it depends on `swapMode`) and calls `render()`.
+- The choice persists in `localStorage` under `schedule_lang`, wrapped in try/catch so private mode degrades instead of throwing.
+- **`/i18n.js` must stay in `PUBLIC_FILES`** in `server.js` — the login page loads it, so gating it would leave logged-out users with an untranslated (or broken) login page. Same trap as `/style.css`.
+- It's also in the Dockerfile `COPY` line; a new frontend file has to be added there too.
 
 ### [login.html](login.html)
 
@@ -164,7 +177,7 @@ is **amd64-only**. An arm64 image exits immediately with `exec format error` and
 no application logs, which surfaces as `ContainerCrashing` plus a `connection
 refused` readiness failure.
 
-- For **Azure**: always `linux/amd64`. `az acr build` (what Terraform uses) does this server-side. A manual `podman build` on Apple Silicon does **not** — pass `--platform linux/amd64`.
+- For **Azure**: always `linux/amd64`. Terraform does **not** build the image — you build and push it yourself, so this is on you: a `docker`/`podman build` on Apple Silicon produces arm64 unless you pass `--platform linux/amd64`.
 - For **local podman on Apple Silicon**: an amd64 image only warns (`image platform ... does not match`) and runs under emulation. `--platform linux/arm64` makes it native, but never push that image to Azure.
 
 **The Dockerfile `COPY`s files by name** — if you add a new HTML/CSS/JS file, or

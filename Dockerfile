@@ -11,7 +11,7 @@ RUN npm install --omit=dev && npm cache clean --force
 
 # Frontend + server files are copied explicitly. If you add a new file that has
 # to be served or required at runtime, add it here or it will 404 / crash.
-COPY --chown=node:node schedule_generator.html login.html style.css script.js ./
+COPY --chown=node:node schedule_generator.html login.html style.css script.js i18n.js ./
 COPY --chown=node:node server.js storage.js ./
 
 ENV NODE_ENV=production

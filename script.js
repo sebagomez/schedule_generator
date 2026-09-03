@@ -1,6 +1,5 @@
-const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
-                   'July', 'August', 'September', 'October', 'November', 'December'];
-const dayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+// Month and weekday names come from i18n.js (Intl-driven, so they follow the
+// selected language automatically). Everything user-facing goes through t().
 
 // Years offered in the year picker. Extend END_YEAR to go further out.
 const START_YEAR = 2026;
@@ -108,7 +107,7 @@ function toggleSwapMode() {
     clearSwapSelection();
 
     const btn = document.getElementById('swapModeBtn');
-    btn.textContent = swapMode ? '✅ Select 2 days to swap' : '🔀 Swap Days';
+    btn.textContent = swapMode ? t('swapActive') : t('swapDays');
     btn.classList.toggle('active', swapMode);
 }
 
@@ -121,7 +120,7 @@ async function onDayClick(date, td, event) {
             return;
         }
         if (swapOverrides[formatDateKey(date)]) {
-            if (confirm(`Undo the change on ${date.toDateString()}?`)) {
+            if (confirm(t('confirmUndo', { date: formatLongDate(date) }))) {
                 await revertOverride(date);
             }
         }
@@ -148,7 +147,7 @@ async function performSwap() {
     const statusB = getWorkSchedule(dateB);
 
     if (statusA === statusB) {
-        alert('Pick one work day and one off day to swap.');
+        alert(t('pickOneEach'));
         clearSwapSelection();
         return;
     }
@@ -167,7 +166,7 @@ async function performSwap() {
         if (!res.ok) throw new Error(`Server responded with ${res.status}`);
         swapOverrides = await res.json();
     } catch (err) {
-        alert('Could not save the swap. Is the server running?');
+        alert(t('errSwap'));
         console.error(err);
     }
 
@@ -183,7 +182,7 @@ async function revertOverride(date) {
         if (!res.ok) throw new Error(`Server responded with ${res.status}`);
         swapOverrides = await res.json();
     } catch (err) {
-        alert('Could not undo the change. Is the server running?');
+        alert(t('errUndo'));
         console.error(err);
         return;
     }
@@ -200,7 +199,7 @@ async function setManualOverride(date, status) {
         if (!res.ok) throw new Error(`Server responded with ${res.status}`);
         swapOverrides = await res.json();
     } catch (err) {
-        alert('Could not save the change. Is the server running?');
+        alert(t('errSave'));
         console.error(err);
         return;
     }
@@ -249,12 +248,12 @@ function showDayMenu(event, date) {
 
     const title = document.createElement('div');
     title.className = 'context-menu__title';
-    title.textContent = `${date.toDateString()} — ${currentStatus === 'work' ? 'Work' : 'Off'}`;
+    title.textContent = `${formatLongDate(date)} — ${t(currentStatus === 'work' ? 'statusWork' : 'statusOff')}`;
     menu.appendChild(title);
 
     const toggleBtn = document.createElement('button');
     toggleBtn.type = 'button';
-    toggleBtn.textContent = `Mark as ${oppositeStatus === 'work' ? 'Work' : 'Off'}`;
+    toggleBtn.textContent = t(oppositeStatus === 'work' ? 'markAsWork' : 'markAsOff');
     toggleBtn.onclick = () => {
         closeContextMenu();
         setManualOverride(date, oppositeStatus);
@@ -264,7 +263,7 @@ function showDayMenu(event, date) {
     if (hasOverride) {
         const undoBtn = document.createElement('button');
         undoBtn.type = 'button';
-        undoBtn.textContent = '↩ Undo change';
+        undoBtn.textContent = t('undoChange');
         undoBtn.onclick = () => {
             closeContextMenu();
             revertOverride(date);
@@ -276,7 +275,7 @@ function showDayMenu(event, date) {
         const cancelBtn = document.createElement('button');
         cancelBtn.type = 'button';
         cancelBtn.className = 'context-menu__cancel';
-        cancelBtn.textContent = 'Cancel';
+        cancelBtn.textContent = t('cancel');
         cancelBtn.onclick = closeContextMenu;
         menu.appendChild(cancelBtn);
 
@@ -309,10 +308,10 @@ function createDayCell(date) {
     if (override) {
         if (override.pairedWith) {
             td.classList.add('swapped');
-            td.title = 'Swapped day - click to undo, right-click for options';
+            td.title = t('titleSwapped');
         } else {
             td.classList.add('manual-edit');
-            td.title = 'Manually edited day - click to undo, right-click for options';
+            td.title = t('titleManual');
         }
     }
 
@@ -330,9 +329,11 @@ function buildMonth(year, month, { expandable = true } = {}) {
     const monthDiv = document.createElement('div');
     monthDiv.className = 'month';
 
+    const monthLabel = `${monthName(month)} ${year}`;
+
     const monthTitle = document.createElement('div');
     monthTitle.className = 'month-name';
-    monthTitle.textContent = `${monthNames[month]} ${year}`;
+    monthTitle.textContent = monthLabel;
 
     if (expandable && ENABLE_FULLSCREEN_MONTH) {
         monthDiv.classList.add('expandable');
@@ -340,8 +341,8 @@ function buildMonth(year, month, { expandable = true } = {}) {
         expandBtn.className = 'expand-btn';
         expandBtn.type = 'button';
         expandBtn.textContent = '⛶';
-        expandBtn.title = `View ${monthNames[month]} ${year} fullscreen`;
-        expandBtn.setAttribute('aria-label', `View ${monthNames[month]} ${year} fullscreen`);
+        expandBtn.title = t('expandTitle', { month: monthLabel });
+        expandBtn.setAttribute('aria-label', t('expandTitle', { month: monthLabel }));
         expandBtn.addEventListener('click', (e) => {
             e.stopPropagation();
             openFullscreen(month);
@@ -355,7 +356,7 @@ function buildMonth(year, month, { expandable = true } = {}) {
     table.className = 'calendar-table';
 
     const headerRow = document.createElement('tr');
-    dayNames.forEach(day => {
+    weekdayNames().forEach(day => {
         const th = document.createElement('th');
         th.textContent = day;
         headerRow.appendChild(th);
@@ -466,14 +467,9 @@ document.addEventListener('keydown', (e) => {
     if (e.key === 'ArrowRight') stepFullscreen(1);
 });
 
-async function logout() {
-    try {
-        await fetch('/api/logout', { method: 'POST' });
-    } catch (err) {
-        console.error(err);
-    }
-    window.location.replace('/login');
-}
+// No logout button by design: this is a shared household calendar and the
+// session is meant to persist. POST /api/logout still exists server-side if a
+// session ever needs clearing.
 
 function setupFullscreen() {
     const overlay = document.getElementById('fullscreenOverlay');
@@ -502,10 +498,24 @@ function showDeviceHint() {
     if (touchHint) touchHint.hidden = !isTouchDevice;
 }
 
+// Re-applies every piece of text that isn't rebuilt by render(): the static
+// markup, the swap button (whose label depends on swapMode) and the hints.
+function refreshLanguage() {
+    applyStaticTranslations();
+    showDeviceHint();
+
+    const btn = document.getElementById('swapModeBtn');
+    if (btn) btn.textContent = swapMode ? t('swapActive') : t('swapDays');
+
+    closeContextMenu();
+    render();
+}
+
 function init() {
+    applyStaticTranslations();
+    buildLanguageSwitcher(document.getElementById('langSwitcher'), refreshLanguage);
     populateYearSelect();
     showDeviceHint();
-    document.getElementById('logoutBtn').addEventListener('click', logout);
     setupFullscreen();
 
     // Load any saved swaps, then draw the calendar.
