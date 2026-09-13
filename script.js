@@ -29,6 +29,10 @@ let currentYear = DEFAULT_YEAR;
 
 // Date (YYYY-MM-DD) -> 'work' | 'off' overrides created by day swaps, loaded from the server.
 let swapOverrides = {};
+// Date (YYYY-MM-DD) -> true for locked days. A locked day cannot be swapped,
+// edited or undone until it is unlocked. Kept separate from swapOverrides so a
+// lock can sit on an unchanged day without inventing an override for it.
+let lockedDays = {};
 let swapMode = false;
 let selectedForSwap = [];
 // Month index currently shown in the fullscreen view, or null when closed.
@@ -97,6 +101,69 @@ async function loadSwapOverrides() {
     }
 }
 
+async function loadLockedDays() {
+    try {
+        const res = await fetch('/api/locks');
+        if (res.ok) {
+            lockedDays = await res.json();
+        }
+    } catch (err) {
+        console.warn('Could not load locked days, continuing without them.', err);
+    }
+}
+
+function isLocked(date) {
+    return Boolean(lockedDays[formatDateKey(date)]);
+}
+
+// Undoing one side of a swap deletes both sides, so a locked PARTNER blocks the
+// undo just as much as a locked day does. Returns the blocking dateKey, or null.
+function undoBlockedBy(date) {
+    const dateKey = formatDateKey(date);
+    if (lockedDays[dateKey]) return dateKey;
+    const override = swapOverrides[dateKey];
+    if (override && override.pairedWith && lockedDays[override.pairedWith]) {
+        return override.pairedWith;
+    }
+    return null;
+}
+
+// Turns a failed response into a message the user can act on. The API answers
+// 409 + { locked } when a date is locked; without this the caller would fall
+// back to the generic "is the server running?" text and hide the real reason.
+async function failureMessage(res, fallbackKey) {
+    let body = null;
+    try {
+        body = await res.json();
+    } catch (err) {
+        // Not JSON (proxy error page, empty body) - fall through.
+    }
+    if (res.status === 409 && body && body.locked) {
+        return t('errLockedDate', { date: formatLongDate(parseDateKey(body.locked)) });
+    }
+    return t(fallbackKey);
+}
+
+async function setLocked(date, locked) {
+    try {
+        const res = await fetch('/api/locks', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ date: formatDateKey(date), locked })
+        });
+        if (!res.ok) {
+            alert(await failureMessage(res, 'errLock'));
+            return;
+        }
+        lockedDays = await res.json();
+    } catch (err) {
+        alert(t('errLock'));
+        console.error(err);
+        return;
+    }
+    render();
+}
+
 function clearSwapSelection() {
     selectedForSwap.forEach(td => td.classList.remove('selected-for-swap'));
     selectedForSwap = [];
@@ -112,6 +179,11 @@ function toggleSwapMode() {
 }
 
 async function onDayClick(date, td, event) {
+    if (swapMode && isLocked(date)) {
+        alert(t('errLocked'));
+        return;
+    }
+
     if (!swapMode) {
         // Touch: tap is the only gesture available, so it opens the menu
         // (which itself offers Undo). Desktop keeps the quick-undo shortcut.
@@ -119,7 +191,7 @@ async function onDayClick(date, td, event) {
             showDayMenu(event, date);
             return;
         }
-        if (swapOverrides[formatDateKey(date)]) {
+        if (swapOverrides[formatDateKey(date)] && !undoBlockedBy(date)) {
             if (confirm(t('confirmUndo', { date: formatLongDate(date) }))) {
                 await revertOverride(date);
             }
@@ -163,8 +235,11 @@ async function performSwap() {
                 status2: statusA
             })
         });
-        if (!res.ok) throw new Error(`Server responded with ${res.status}`);
-        swapOverrides = await res.json();
+        if (!res.ok) {
+            alert(await failureMessage(res, 'errSwap'));
+        } else {
+            swapOverrides = await res.json();
+        }
     } catch (err) {
         alert(t('errSwap'));
         console.error(err);
@@ -179,7 +254,10 @@ async function revertOverride(date) {
     const dateKey = formatDateKey(date);
     try {
         const res = await fetch(`/api/swaps/${dateKey}`, { method: 'DELETE' });
-        if (!res.ok) throw new Error(`Server responded with ${res.status}`);
+        if (!res.ok) {
+            alert(await failureMessage(res, 'errUndo'));
+            return;
+        }
         swapOverrides = await res.json();
     } catch (err) {
         alert(t('errUndo'));
@@ -196,7 +274,10 @@ async function setManualOverride(date, status) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ date: formatDateKey(date), status })
         });
-        if (!res.ok) throw new Error(`Server responded with ${res.status}`);
+        if (!res.ok) {
+            alert(await failureMessage(res, 'errSave'));
+            return;
+        }
         swapOverrides = await res.json();
     } catch (err) {
         alert(t('errSave'));
@@ -242,6 +323,7 @@ function showDayMenu(event, date) {
     const currentStatus = getWorkSchedule(date);
     const oppositeStatus = currentStatus === 'work' ? 'off' : 'work';
     const hasOverride = Boolean(swapOverrides[dateKey]);
+    const locked = Boolean(lockedDays[dateKey]);
 
     const menu = document.createElement('div');
     menu.className = isTouchDevice ? 'context-menu context-menu--sheet' : 'context-menu';
@@ -251,24 +333,47 @@ function showDayMenu(event, date) {
     title.textContent = `${formatLongDate(date)} — ${t(currentStatus === 'work' ? 'statusWork' : 'statusOff')}`;
     menu.appendChild(title);
 
-    const toggleBtn = document.createElement('button');
-    toggleBtn.type = 'button';
-    toggleBtn.textContent = t(oppositeStatus === 'work' ? 'markAsWork' : 'markAsOff');
-    toggleBtn.onclick = () => {
-        closeContextMenu();
-        setManualOverride(date, oppositeStatus);
-    };
-    menu.appendChild(toggleBtn);
-
-    if (hasOverride) {
-        const undoBtn = document.createElement('button');
-        undoBtn.type = 'button';
-        undoBtn.textContent = t('undoChange');
-        undoBtn.onclick = () => {
+    // A locked day offers exactly one action: unlock. Everything else is
+    // hidden, so there is no button that the server would only reject.
+    if (locked) {
+        const unlockBtn = document.createElement('button');
+        unlockBtn.type = 'button';
+        unlockBtn.textContent = t('unlockDay');
+        unlockBtn.onclick = () => {
             closeContextMenu();
-            revertOverride(date);
+            setLocked(date, false);
         };
-        menu.appendChild(undoBtn);
+        menu.appendChild(unlockBtn);
+    } else {
+        const toggleBtn = document.createElement('button');
+        toggleBtn.type = 'button';
+        toggleBtn.textContent = t(oppositeStatus === 'work' ? 'markAsWork' : 'markAsOff');
+        toggleBtn.onclick = () => {
+            closeContextMenu();
+            setManualOverride(date, oppositeStatus);
+        };
+        menu.appendChild(toggleBtn);
+
+        // Hidden when a locked partner would make the undo fail server-side.
+        if (hasOverride && !undoBlockedBy(date)) {
+            const undoBtn = document.createElement('button');
+            undoBtn.type = 'button';
+            undoBtn.textContent = t('undoChange');
+            undoBtn.onclick = () => {
+                closeContextMenu();
+                revertOverride(date);
+            };
+            menu.appendChild(undoBtn);
+        }
+
+        const lockBtn = document.createElement('button');
+        lockBtn.type = 'button';
+        lockBtn.textContent = t('lockDay');
+        lockBtn.onclick = () => {
+            closeContextMenu();
+            setLocked(date, true);
+        };
+        menu.appendChild(lockBtn);
     }
 
     if (isTouchDevice) {
@@ -304,14 +409,19 @@ function createDayCell(date) {
     const schedule = getWorkSchedule(date);
     td.className = schedule === 'work' ? 'work-day' : 'off-day';
 
+    if (lockedDays[td.dataset.date]) {
+        td.classList.add('locked');
+        td.title = t('titleLocked');
+    }
+
     const override = swapOverrides[td.dataset.date];
     if (override) {
         if (override.pairedWith) {
             td.classList.add('swapped');
-            td.title = t('titleSwapped');
+            if (!td.title) td.title = t('titleSwapped');
         } else {
             td.classList.add('manual-edit');
-            td.title = t('titleManual');
+            if (!td.title) td.title = t('titleManual');
         }
     }
 
@@ -518,8 +628,8 @@ function init() {
     showDeviceHint();
     setupFullscreen();
 
-    // Load any saved swaps, then draw the calendar.
-    loadSwapOverrides().then(render);
+    // Load any saved swaps and locks, then draw the calendar.
+    Promise.all([loadSwapOverrides(), loadLockedDays()]).then(render);
 }
 
 init();
