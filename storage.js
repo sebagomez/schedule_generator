@@ -1,6 +1,7 @@
 /**
- * Persistence layer for the two JSON documents the app keeps:
+ * Persistence layer for the three JSON documents the app keeps:
  *   - swaps.json    -> day overrides   { [dateKey]: { status, pairedWith } }
+ *   - locks.json    -> locked days     { [dateKey]: true }
  *   - settings.json -> { password, sessionSecret }
  *
  * Two interchangeable backends:
@@ -30,6 +31,7 @@ const fs = require('fs');
 const path = require('path');
 
 const SWAPS_DOC = 'swaps.json';
+const LOCKS_DOC = 'locks.json';
 const SETTINGS_DOC = 'settings.json';
 
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
@@ -49,6 +51,7 @@ const backend = (process.env.STORAGE_BACKEND || (hasAzureCredentials() ? 'azure-
 
 const cache = {
     [SWAPS_DOC]: {},
+    [LOCKS_DOC]: {},
     [SETTINGS_DOC]: {}
 };
 
@@ -187,10 +190,12 @@ async function init() {
         // Safe to call repeatedly; no-ops when the container already exists.
         await getContainerClient().createIfNotExists();
         cache[SWAPS_DOC] = await blobRead(SWAPS_DOC);
+        cache[LOCKS_DOC] = await blobRead(LOCKS_DOC);
         cache[SETTINGS_DOC] = await blobRead(SETTINGS_DOC);
         console.log(`Storage: azure-blob (container "${AZURE_CONTAINER}")`);
     } else {
         cache[SWAPS_DOC] = localRead(SWAPS_DOC);
+        cache[LOCKS_DOC] = localRead(LOCKS_DOC);
         cache[SETTINGS_DOC] = localRead(SETTINGS_DOC);
         console.log(`Storage: local files in ${DATA_DIR}`);
     }
@@ -215,6 +220,14 @@ async function saveSwaps(value) {
     await write(SWAPS_DOC, value);
 }
 
+function getLocks() {
+    return cache[LOCKS_DOC];
+}
+
+async function saveLocks(value) {
+    await write(LOCKS_DOC, value);
+}
+
 function getSettings() {
     // Local files are cheap to stat/read, so re-read them: editing
     // data/settings.json by hand then takes effect without a restart, which is
@@ -236,6 +249,8 @@ module.exports = {
     init,
     getSwaps,
     saveSwaps,
+    getLocks,
+    saveLocks,
     getSettings,
     saveSettings
 };

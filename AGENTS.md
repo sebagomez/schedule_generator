@@ -43,6 +43,9 @@ Single-user personal tool: no database, no user accounts, no build step, no test
     - Verified byte-identical to the old logic for 2026, 2027 and 2028, and continuous through 2039.
   - If you change parity derivation, re-verify that `sched(d) === sched(d + 14 days)` holds across year boundaries.
 - **`getWorkSchedule(date)`**: the actual source of truth used everywhere else. Wraps `getBaseWorkSchedule` and checks `swapOverrides` first (keyed by `YYYY-MM-DD`, via `formatDateKey`) — an overridden day's status wins over the pattern.
+- **Re-swapping releases the old partner.** Overwriting a day that was already half of a swap would otherwise leave the other half pointing at a link that no longer matches (`A↔B`, then `A↔C`, leaves `B.pairedWith = A` while `A.pairedWith = C`; undoing `B` then deletes `A` and orphans `C`). `unlinkPartner()` in `server.js` runs before every write in `POST /api/swaps` and `POST /api/swaps/single`: the released day keeps its work/off status but becomes an unpaired override. This is a data-integrity rule, not a lock rule — it applies with no locks in play.
+- **Locked days (`lockedDays`)**: a separate map `{ [dateKey]: true }`, loaded from `GET /api/locks` by `loadLockedDays()` (fails soft) and written by `setLocked(date, locked)`. Deliberately **not** a field on the `swapOverrides` entry: a lock must be possible on an unchanged day, which would otherwise need a fake override, and unlocking would leave a junk entry behind. A locked day cannot be swapped, edited or undone — `onDayClick()` refuses it in swap mode with an alert (there is no tooltip on touch, so silence would be confusing), the desktop quick-undo click ignores it, and `showDayMenu()` offers **only** "Unlock day". **A lock protects that one day, not its swap partner**: if `A↔B` is swapped and `B` is locked, `A` is still free to be re-swapped or edited (`B` then simply unpairs, keeping its status). Only *undo* is blocked from `A`, because a delete removes both sides — `undoBlockedBy(date)` returns the locked day (itself or its `pairedWith`) and hides the undo item. Don't "fix" this into freezing the whole pair; it was decided deliberately.
+- **API errors carry a reason.** `failureMessage()` reads the response body and turns `409 + { locked }` into a named-date message, instead of the generic "is the server running?" fallback. Use it in any new fetch helper, or a rejected change looks like an outage. Visually it keeps its `work-day`/`off-day` colour and adds `.locked`, whose `::before` paints the red diagonal hatch (`::after` is already taken by the 🔀/✏️ badge).
 - **Overrides (`swapOverrides`)**: each entry is `{ status: 'work'|'off', pairedWith: <dateKey>|null }`. A two-day swap sets both dates' entries pointing at each other via `pairedWith`; a single-day edit sets `pairedWith: null`. `revertOverride(date)` `DELETE`s a day's override, and the server cascades the delete to `pairedWith` too — **undoing either side of a swap reverts both days**, which is the whole reason `pairedWith` exists (a flat one-day-at-a-time override map previously left the other side of a swap stuck).
   - Keys are full dates, so overrides are inherently year-agnostic: switching the year picker changes only what's rendered, and the server needs no year awareness.
 - **Swap UI**: `swapOverrides` is loaded from `GET /api/swaps` on startup (`loadSwapOverrides`, fails soft). `toggleSwapMode()` + `onDayClick()` drive the click-two-days-to-swap flow; `performSwap()` validates the pair has different statuses (a swap only makes sense between one work day and one off day) and `POST`s the pair to `/api/swaps`. **Important**: when reconstructing a `Date` from a stored `YYYY-MM-DD` key, always use `parseDateKey()`, never `new Date(dateKey)` — the latter parses as UTC midnight and silently shifts a day in negative-UTC timezones.
@@ -88,7 +91,7 @@ a `@media print` block.
 
 ### [storage.js](storage.js)
 
-Persistence layer for the two JSON documents (`swaps.json`, `settings.json`),
+Persistence layer for the three JSON documents (`swaps.json`, `locks.json`, `settings.json`),
 with two interchangeable backends selected by `STORAGE_BACKEND`, or inferred
 (Azure credentials present ⇒ `azure-blob`, else `local`):
 
@@ -146,13 +149,22 @@ store.
 - **`/api/*` is intentionally exempt from the gate.** This was an explicit product decision. Consequences to keep in mind: anyone who can reach the host can still read and rewrite the schedule via `curl /api/swaps`, so the password only hides the UI. To close it, delete the `req.path.startsWith('/api/')` exemption in the gate middleware.
 
 **Endpoints:**
+- `GET /api/locks`
+- `POST /api/locks` — `{date, locked}`, adds or removes a lock; returns the whole map
 - `GET /api/swaps`
 - `POST /api/swaps` — `{date1, status1, date2, status2}`, sets a paired override on both dates
 - `POST /api/swaps/single` — `{date, status}`, sets an unpaired override
 - `DELETE /api/swaps/:date` — deletes that date's override and, if paired, its partner's too
 - `POST /api/login`, `POST /api/logout`, `GET /login`
 
-Backed by flat JSON at `DATA_DIR/swaps.json` (`DATA_DIR` defaults to `./data`, `/app/data` in Docker).
+Backed by flat JSON at `DATA_DIR/swaps.json` and `DATA_DIR/locks.json` (`DATA_DIR` defaults to `./data`, `/app/data` in Docker).
+
+**Locked days are enforced server-side, not only in the UI.** `/api/*` is open,
+so the three write endpoints above reject a locked date with **409**:
+`POST /api/swaps` if either date is locked, `POST /api/swaps/single` if the date
+is locked, and `DELETE /api/swaps/:date` if the date **or its `pairedWith`
+partner** is locked (deleting one side deletes both, so a locked partner must
+block it). Keep that check if you touch those handlers.
 
 ### [Dockerfile](Dockerfile) / [docker-compose.yml](docker-compose.yml)
 

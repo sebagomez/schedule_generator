@@ -194,8 +194,24 @@ body {
     outline: 3px solid #fbbc04;
     outline-offset: -3px;
 }
-.swapped, .manual-edit {
+.swapped, .manual-edit, .locked {
     position: relative;
+}
+/* Red hatch drawn on top of the day's own colour (blue work / white off).
+   Uses ::before because ::after already carries the 🔀 / ✏️ badge. */
+.locked::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: repeating-linear-gradient(
+        45deg,
+        rgba(234, 67, 53, 0.85) 0 2px,
+        transparent 2px 8px
+    );
+}
+.calendar-table td.locked {
+    cursor: not-allowed;
 }
 .swapped::after {
     content: '🔀';

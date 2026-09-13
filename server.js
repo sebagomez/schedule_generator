@@ -34,6 +34,33 @@ async function writeSwaps(swaps) {
     await storage.saveSwaps(swaps);
 }
 
+function readLocks() {
+    return { ...storage.getLocks() };
+}
+
+function isLocked(date) {
+    return Boolean(storage.getLocks()[date]);
+}
+
+// The API is deliberately unauthenticated, so the lock rule is enforced here
+// too - the UI hiding the buttons is not a guarantee.
+function lockedResponse(res, date) {
+    return res.status(409).json({ error: `${date} is locked; unlock it first.`, locked: date });
+}
+
+// Releases the day this date was previously paired with, before its entry is
+// overwritten. Re-swapping one half of a pair must not leave the other half
+// pointing at a link that no longer exists: the old partner keeps its work/off
+// status but becomes an unpaired (single) override.
+function unlinkPartner(swaps, date) {
+    const previous = swaps[date];
+    if (!previous || !previous.pairedWith) return;
+    const partner = swaps[previous.pairedWith];
+    if (partner && partner.pairedWith === date) {
+        swaps[previous.pairedWith] = { status: partner.status, pairedWith: null };
+    }
+}
+
 // settings holds the single shared password. sessionSecret is generated once
 // and reused so a server restart doesn't log you out.
 async function loadOrCreateSettings() {
@@ -197,8 +224,13 @@ app.post('/api/swaps', async (req, res, next) => {
         return res.status(400).json({ error: 'date1, date2 and valid work/off statuses are required' });
     }
 
+    if (isLocked(date1)) return lockedResponse(res, date1);
+    if (isLocked(date2)) return lockedResponse(res, date2);
+
     try {
         const swaps = readSwaps();
+        unlinkPartner(swaps, date1);
+        unlinkPartner(swaps, date2);
         swaps[date1] = { status: status1, pairedWith: date2 };
         swaps[date2] = { status: status2, pairedWith: date1 };
         await writeSwaps(swaps);
@@ -215,8 +247,11 @@ app.post('/api/swaps/single', async (req, res, next) => {
         return res.status(400).json({ error: 'date and a valid work/off status are required' });
     }
 
+    if (isLocked(date)) return lockedResponse(res, date);
+
     try {
         const swaps = readSwaps();
+        unlinkPartner(swaps, date);
         swaps[date] = { status, pairedWith: null };
         await writeSwaps(swaps);
         res.json(swaps);
@@ -226,16 +261,49 @@ app.post('/api/swaps/single', async (req, res, next) => {
 });
 
 app.delete('/api/swaps/:date', async (req, res, next) => {
+    const swaps = readSwaps();
+    const entry = swaps[req.params.date];
+
+    if (isLocked(req.params.date)) return lockedResponse(res, req.params.date);
+    // Undoing one side of a swap undoes both, so a locked partner blocks it too.
+    if (entry && entry.pairedWith && isLocked(entry.pairedWith)) {
+        return lockedResponse(res, entry.pairedWith);
+    }
+
     try {
-        const swaps = readSwaps();
-        const entry = swaps[req.params.date];
         delete swaps[req.params.date];
-        // A swap always involves two dates - undoing one side undoes both.
         if (entry && entry.pairedWith) {
             delete swaps[entry.pairedWith];
         }
         await writeSwaps(swaps);
         res.json(swaps);
+    } catch (err) {
+        next(err);
+    }
+});
+
+// ---- Locked days API (no auth, same as the swaps endpoints) ----
+
+app.get('/api/locks', (req, res) => {
+    res.json(readLocks());
+});
+
+app.post('/api/locks', async (req, res, next) => {
+    const { date, locked } = req.body || {};
+
+    if (!date || typeof locked !== 'boolean') {
+        return res.status(400).json({ error: 'date and a boolean locked flag are required' });
+    }
+
+    try {
+        const locks = readLocks();
+        if (locked) {
+            locks[date] = true;
+        } else {
+            delete locks[date];
+        }
+        await storage.saveLocks(locks);
+        res.json(locks);
     } catch (err) {
         next(err);
     }
